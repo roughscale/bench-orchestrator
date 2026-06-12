@@ -14,14 +14,12 @@ class CommandCheckScorer(Scorer):
         self.timeout_seconds = timeout_seconds
 
     def evaluate(self, manifest: Manifest, target: TargetHandle, agent_result: AgentResult) -> ScoreResult:
-        result = subprocess.run(
-            self.command,
-            shell=True,
-            text=True,
-            capture_output=True,
-            timeout=self.timeout_seconds,
-            check=False,
-        )
+        container_id = target.metadata.get("primary_container_id")
+        if container_id:
+            result = self._docker_exec(container_id)
+        else:
+            result = self._local_exec()
+
         return ScoreResult(
             result.returncode == 0,
             self.name,
@@ -30,6 +28,26 @@ class CommandCheckScorer(Scorer):
                 "return_code": result.returncode,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
+                "via": "docker_exec" if container_id else "local",
             },
+        )
+
+    def _docker_exec(self, container_id: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["docker", "exec", container_id, "sh", "-c", self.command],
+            text=True,
+            capture_output=True,
+            timeout=self.timeout_seconds,
+            check=False,
+        )
+
+    def _local_exec(self) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            self.command,
+            shell=True,
+            text=True,
+            capture_output=True,
+            timeout=self.timeout_seconds,
+            check=False,
         )
 

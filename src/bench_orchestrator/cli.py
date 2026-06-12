@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import dotenv
+
 from bench_orchestrator.agents.factory import build_agent_adapter
 from bench_orchestrator.models import load_manifest
 from bench_orchestrator.runner import BenchmarkRunner
@@ -23,11 +25,18 @@ def build_parser() -> argparse.ArgumentParser:
     run_task.add_argument("manifest", type=Path)
     run_task.add_argument("--root-dir", type=Path, default=Path.cwd())
     run_task.add_argument("--dry-run", action="store_true")
+    run_task.add_argument(
+        "--pentest-agent-dir",
+        type=Path,
+        default=None,
+        help="Path to the pentest-agent repo (required when adapter is pentest-agent)",
+    )
 
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    dotenv.load_dotenv()
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -40,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run-task":
         manifest = load_manifest(args.manifest)
         provider = build_target_provider(manifest.provider)
-        adapter = build_agent_adapter(manifest.agent_adapter)
+        adapter = build_agent_adapter(manifest.agent_adapter, pentest_agent_dir=args.pentest_agent_dir)
         scorer_configs = manifest.raw.get("goal", {}).get("success", [])
         scorers = build_scorers(scorer_configs)
         runner = BenchmarkRunner(provider, adapter, scorers, root_dir=args.root_dir, dry_run=args.dry_run)

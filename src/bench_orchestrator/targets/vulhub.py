@@ -102,24 +102,76 @@ class VulhubTargetProvider(TargetProvider):
             )
 
         run_command(["docker", "network", "create", network_name], recorder, check=False)
-        run_command(
-            ["docker", "compose", "-p", project_name, "up", "-d", "--remove-orphans"],
-            recorder,
-            cwd=source_dir,
+        compose_started = False
+        try:
+            run_command(
+                ["docker", "compose", "-p", project_name, "up", "-d", "--remove-orphans"],
+                recorder,
+                cwd=source_dir,
+            )
+            compose_started = True
+
+            # Connect all compose containers to the bench network so agent containers
+            # on that network can reach the target by alias.
+            primary_container_id = _attach_compose_to_network(
+                project_name, network_name, target_alias, manifest, recorder
+            )
+        except Exception:
+            if compose_started:
+                run_command(
+                    ["docker", "compose", "-p", project_name, "down", "--remove-orphans"],
+                    recorder,
+                    cwd=source_dir,
+                    check=False,
+                )
+            run_command(["docker", "network", "rm", network_name], recorder, check=False)
+            raise
+
+        recorder.event(
+            "target_started",
+            {
+                "project_name": project_name,
+                "network_name": network_name,
+                "primary_container_id": primary_container_id,
+            },
         )
-        recorder.event("target_started", {"project_name": project_name, "network_name": network_name})
         return TargetHandle(
             provider=self.name,
             target_id=manifest.id,
             network_name=network_name,
             target_alias=target_alias,
-            metadata={"project_name": project_name, "source_dir": str(source_dir)},
+            metadata={
+                "project_name": project_name,
+                "source_dir": str(source_dir),
+                "primary_container_id": primary_container_id,
+            },
         )
 
     def healthcheck(self, handle: TargetHandle, manifest: Manifest, recorder: RunRecorder) -> HealthStatus:
+        import time
+        import requests as _requests
+
         checks = manifest.raw.get("target", {}).get("health", [])
-        recorder.event("target_healthy", {"status": "not_implemented", "checks": checks})
-        return HealthStatus(ready=True, checks=checks, message="Health checks are recorded but not yet actively probed.")
+        timeout = manifest.raw.get("target", {}).get("startup_timeout_seconds", 120)
+        deadline = time.monotonic() + timeout
+        poll_interval = 5
+
+        last_error: str | None = None
+        while time.monotonic() < deadline:
+            all_ok = True
+            for check in checks:
+                ok, err = _run_health_check(check)
+                if not ok:
+                    all_ok = False
+                    last_error = err
+                    break
+            if all_ok:
+                recorder.event("target_healthy", {"checks": checks})
+                return HealthStatus(ready=True, checks=checks)
+            time.sleep(poll_interval)
+
+        recorder.event("target_unhealthy", {"checks": checks, "last_error": last_error})
+        return HealthStatus(ready=False, checks=checks, message=f"Target not healthy after {timeout}s: {last_error}")
 
     def collect_logs(self, handle: TargetHandle, manifest: Manifest, recorder: RunRecorder) -> None:
         source_dir = Path(handle.metadata.get("source_dir", require_source_dir(manifest)))
@@ -204,7 +256,7 @@ def require_source_dir(manifest: Manifest) -> Path:
 
 def docker_project_name(run_id: str, manifest_id: str) -> str:
     slug = "".join(ch if ch.isalnum() else "_" for ch in manifest_id.lower()).strip("_")
-    return f"bench_{run_id}_{slug}"[:63]
+    return f"bench_{run_id}_{slug}".lower()[:63]
 
 
 def run_command(
@@ -219,4 +271,96 @@ def run_command(
     if check and result.returncode != 0:
         raise RuntimeError(f"command failed: {' '.join(args)}")
     return result
+
+
+def _attach_compose_to_network(
+    project_name: str,
+    network_name: str,
+    target_alias: str,
+    manifest: Manifest,
+    recorder: RunRecorder,
+) -> str | None:
+    """Connect all containers in a compose project to the bench network.
+
+    The primary container (the one exposing the first manifest port) receives
+    the target_alias so agent containers can resolve it by name. Returns the
+    primary container ID, or None if no containers were found.
+    """
+    # Get all container IDs for this project
+    result = subprocess.run(
+        ["docker", "ps", "--filter", f"label=com.docker.compose.project={project_name}", "-q"],
+        capture_output=True, text=True,
+    )
+    container_ids = [c.strip() for c in result.stdout.splitlines() if c.strip()]
+    if not container_ids:
+        return None
+
+    # Identify the primary container: the one that has the first manifest port bound.
+    # Fall back to the first container if no port match is found.
+    primary_ports = manifest.raw.get("network", {}).get("exposed_ports", [])
+    primary_port = primary_ports[0].split("/")[0] if primary_ports else None
+    primary_id = _find_primary_container(container_ids, primary_port) or container_ids[0]
+
+    # Connect all containers; primary gets the target alias.
+    for cid in container_ids:
+        args = ["docker", "network", "connect"]
+        if cid == primary_id:
+            args += ["--alias", target_alias]
+        args += [network_name, cid]
+        # Ignore errors — container may already be on the network.
+        subprocess.run(args, capture_output=True)
+
+    recorder.command(
+        f"docker network connect (attach {len(container_ids)} containers to {network_name})",
+        return_code=0,
+    )
+    return primary_id
+
+
+def _find_primary_container(container_ids: list[str], port: str | None) -> str | None:
+    """Return the container ID that has the given port published, or None."""
+    if not port:
+        return None
+    result = subprocess.run(
+        ["docker", "ps", "--filter", f"publish={port}", "-q", "--no-trunc"],
+        capture_output=True, text=True,
+    )
+    published = {c.strip() for c in result.stdout.splitlines() if c.strip()}
+    # docker ps -q returns short IDs; match against potentially long IDs
+    for cid in container_ids:
+        if cid[:12] in published or cid in published:
+            return cid
+    return None
+
+
+def _run_health_check(check: dict[str, Any]) -> tuple[bool, str | None]:
+    """Execute a single health check. Returns (ok, error_message)."""
+    import socket
+    import requests as _requests
+
+    check_type = check.get("type", "tcp")
+    try:
+        if check_type == "http":
+            # Replace the "target" alias with 127.0.0.1 — the orchestrator is on the
+            # host and reaches containers through the bound ports, not the bench network.
+            url = check.get("url", "").replace("//target:", "//127.0.0.1:")
+            expect = check.get("expect_status", [200, 302, 401, 403])
+            resp = _requests.get(url, timeout=5, allow_redirects=False)
+            if resp.status_code in expect:
+                return True, None
+            return False, f"HTTP {resp.status_code} not in {expect} for {url}"
+
+        elif check_type == "tcp":
+            host = check.get("host", "127.0.0.1")
+            if host == "target":
+                host = "127.0.0.1"
+            port = int(check.get("port", 80))
+            with socket.create_connection((host, port), timeout=5):
+                pass
+            return True, None
+
+    except Exception as exc:
+        return False, str(exc)
+
+    return False, f"unknown health check type: {check_type}"
 
