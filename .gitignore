@@ -8,4 +8,5 @@ build/
 *.egg-info/
 logs/
 manifests/**/*.generated.yaml
+.env
 

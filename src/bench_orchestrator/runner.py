@@ -54,4 +54,5 @@ class BenchmarkRunner:
             if handle is not None:
                 self.target_provider.collect_logs(handle, manifest, recorder)
                 self.target_provider.stop(handle, manifest, recorder)
+            self.agent_adapter.stop(recorder)
 
