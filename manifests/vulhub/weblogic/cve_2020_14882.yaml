@@ -16,6 +16,7 @@ benchmark:
   epss_score: 0.94454
   app: WebLogic
   version: 12.2.1.3-2018
+  keyword: weblogic
 network:
   target_alias: target
   exposed_ports:
@@ -30,15 +31,6 @@ target:
     - 302
     - 401
     - 403
-agent:
-  adapter: pentest-agent
-  max_iterations: 30
-  timeout_seconds: 3600
-  pentest_agent:
-    keyword: weblogic
-    app: WebLogic
-    version: 12.2.1.3-2018
-    command_to_execute: touch /tmp/pwned_pentestagent
 goal:
   kind: functional_exploit
   success:

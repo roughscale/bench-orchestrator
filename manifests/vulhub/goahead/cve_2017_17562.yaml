@@ -16,6 +16,7 @@ benchmark:
   epss_score: 0.94373
   app: GoAhead
   version: 3.6.4
+  keyword: goahead
 network:
   target_alias: target
   exposed_ports:
@@ -30,15 +31,6 @@ target:
     - 302
     - 401
     - 403
-agent:
-  adapter: pentest-agent
-  max_iterations: 30
-  timeout_seconds: 3600
-  pentest_agent:
-    keyword: goahead
-    app: GoAhead
-    version: 3.6.4
-    command_to_execute: touch /tmp/pwned_pentestagent
 goal:
   kind: functional_exploit
   success:
