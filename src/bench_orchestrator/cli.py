@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 import dotenv
+import yaml
 
 from bench_orchestrator.agents.factory import build_agent_adapter
 from bench_orchestrator.models import load_manifest
@@ -31,6 +32,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to the pentest-agent repo (required when adapter is pentest-agent)",
     )
+    run_task.add_argument(
+        "--agent-config",
+        type=Path,
+        required=True,
+        help="YAML file with agent run configuration (adapter, models, etc.)",
+    )
 
     return parser
 
@@ -48,8 +55,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "run-task":
         manifest = load_manifest(args.manifest)
+        with args.agent_config.open(encoding="utf-8") as fh:
+            agent_config = yaml.safe_load(fh) or {}
+        adapter_name = agent_config.get("adapter")
+        if not adapter_name:
+            parser.error("--agent-config must specify 'adapter'")
         provider = build_target_provider(manifest.provider)
-        adapter = build_agent_adapter(manifest.agent_adapter, pentest_agent_dir=args.pentest_agent_dir)
+        adapter = build_agent_adapter(
+            adapter_name,
+            pentest_agent_dir=args.pentest_agent_dir,
+            agent_config=agent_config,
+        )
         scorer_configs = manifest.raw.get("goal", {}).get("success", [])
         scorers = build_scorers(scorer_configs)
         runner = BenchmarkRunner(provider, adapter, scorers, root_dir=args.root_dir, dry_run=args.dry_run)

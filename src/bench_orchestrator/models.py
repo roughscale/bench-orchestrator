@@ -92,10 +92,6 @@ class Manifest:
         return str(self.raw["provider"])
 
     @property
-    def agent_adapter(self) -> str:
-        return str(self.raw.get("agent", {}).get("adapter", "manual"))
-
-    @property
     def source_dir(self) -> Path | None:
         value = self.raw.get("source_dir")
         if not value:
