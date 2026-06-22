@@ -38,8 +38,8 @@ Core rule:
   and artifacts under `logs/<run_id>/`.
 - Provide initial scoring plugins for HTTP probes, command predicates, flags,
   and stage milestones.
-- Provide skeleton providers/adapters for Vulhub, HTB, static hosts,
-  pentest-agent, VulnBot, and manual baselines.
+- Provide providers/adapters for Vulhub, static hosts, pentest-agent, PentestGPT
+  v2, VulnBot, HTB, and manual baselines. Some providers are still scaffolded.
 
 ## Quick Start
 
@@ -102,3 +102,28 @@ evidence:
 Generated Vulhub manifests are draft inventory. Success checks must be curated
 before a run is treated as benchmark quality.
 
+## PentestGPT v2 Adapter
+
+Use `agent.adapter: pentestgptv2` to run the current autonomous PentestGPT CLI
+inside a Docker image such as `pentestgpt:latest`. The adapter starts a
+long-running container on the benchmark network, invokes `pentestgpt`, records
+stdout/stderr, parses the final `[DONE]` line, and copies PentestGPT session
+artifacts into the run log.
+
+```yaml
+agent:
+  adapter: pentestgptv2
+  timeout_seconds: 3600
+  pentestgptv2:
+    scheme: http
+    mode: ctf
+    model: claude-opus-4-20250514
+    instruction: Authorized lab target. Capture the benchmark proof.
+```
+
+Run with a custom image if needed:
+
+```bash
+bench-orchestrator run-task manifests/example.yaml \
+  --pentestgptv2-image pentestgpt:latest
+```
