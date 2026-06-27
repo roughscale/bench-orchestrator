@@ -38,6 +38,11 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="YAML file with agent run configuration (adapter, models, etc.)",
     )
+    run_task.add_argument(
+        "--vulnbot-image",
+        default="ghcr.io/roughscale/vulnbot:latest",
+        help="Docker image to use when adapter is vulnbot",
+    )
 
     return parser
 
@@ -65,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
             adapter_name,
             pentest_agent_dir=args.pentest_agent_dir,
             agent_config=agent_config,
+            vulnbot_image=args.vulnbot_image,
         )
         scorer_configs = manifest.raw.get("goal", {}).get("success", [])
         scorers = build_scorers(scorer_configs)
