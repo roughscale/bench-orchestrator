@@ -102,3 +102,44 @@ evidence:
 Generated Vulhub manifests are draft inventory. Success checks must be curated
 before a run is treated as benchmark quality.
 
+## VulnBot Adapter
+
+Use `agent.adapter: vulnbot` to run the roughscale VulnBot fork in a Docker
+container. The adapter starts the container on the benchmark network, mounts a
+per-run `PENTEST_ROOT`, writes VulnBot's YAML config files, feeds the benchmark
+task description to the interactive CLI, and records stdout/stderr plus the
+VulnBot workspace under the run artifacts.
+
+VulnBot expects a Kali-style execution host over SSH and a MySQL database. Point
+those at services reachable from the benchmark network with `agent.vulnbot.kali`
+and `agent.vulnbot.mysql`.
+
+```yaml
+agent:
+  adapter: vulnbot
+  timeout_seconds: 3600
+  vulnbot:
+    scheme: http
+    max_interactions: 5
+    model: gpt-4o-mini
+    base_url: https://api.openai.com/v1
+    instruction: Authorized lab target. Capture the benchmark proof.
+    kali:
+      hostname: kali
+      port: 22
+      username: root
+      password: root
+    mysql:
+      host: mysql
+      port: 3306
+      user: vulnbot
+      password: vulnbot
+      database: vulnbot
+```
+
+Run with a custom roughscale VulnBot image if needed:
+
+```bash
+bench-orchestrator run-task manifests/example.yaml \
+  --vulnbot-image vulnbot:latest
+```
