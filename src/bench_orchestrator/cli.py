@@ -36,6 +36,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="pentestgpt:latest",
         help="Docker image to use when adapter is pentestgptv2",
     )
+    run_task.add_argument(
+        "--vulnbot-image",
+        default="ghcr.io/roughscale/vulnbot:latest",
+        help="Docker image to use when adapter is vulnbot",
+    )
 
     return parser
 
@@ -58,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest.agent_adapter,
             pentest_agent_dir=args.pentest_agent_dir,
             pentestgptv2_image=args.pentestgptv2_image,
+            vulnbot_image=args.vulnbot_image,
         )
         scorer_configs = manifest.raw.get("goal", {}).get("success", [])
         scorers = build_scorers(scorer_configs)

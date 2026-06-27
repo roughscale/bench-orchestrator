@@ -13,6 +13,7 @@ def build_agent_adapter(
     name: str,
     pentest_agent_dir: Path | None = None,
     pentestgptv2_image: str = "pentestgpt:latest",
+    vulnbot_image: str = "ghcr.io/roughscale/vulnbot:latest",
 ) -> AgentAdapter:
     if name == "manual":
         return ManualAgentAdapter()
@@ -23,5 +24,5 @@ def build_agent_adapter(
     if name in {"pentestgptv2", "pentestgpt-v2", "pentestgpt"}:
         return PentestGptV2Adapter(image=pentestgptv2_image)
     if name == "vulnbot":
-        return VulnBotAdapter()
+        return VulnBotAdapter(image=vulnbot_image)
     raise ValueError(f"unknown agent adapter: {name}")
