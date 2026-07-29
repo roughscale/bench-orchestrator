@@ -1,0 +1,21 @@
+adapter: vulnbot
+max_interactions: 15
+timeout_seconds: 3600
+
+model: gpt-5.2
+base_url: https://api.openai.com/v1
+# api_key: set via OPENAI_API_KEY env var
+
+kali:
+  image: kali-headless-base-arm64
+  hostname: kali
+  port: 22
+  username: root
+  password: root
+
+mysql:
+  host: mysql
+  port: 3306
+  user: vulnbot
+  password: vulnbot
+  database: vulnbot

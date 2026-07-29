@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
-from uuid import uuid4
+import re
 
 import yaml
 
@@ -26,9 +26,14 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
+def _safe_dirname(name: str) -> str:
+    """Sanitise a name for use as a directory component."""
+    return re.sub(r"[^\w.\-]", "_", name)
+
+
 def new_run_id(prefix: str = "run") -> str:
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    return f"{prefix}_{stamp}_{uuid4().hex[:8]}"
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%SZ")
+    return f"{prefix}_{stamp}"
 
 
 @dataclass(frozen=True)
@@ -39,10 +44,25 @@ class RunContext:
     dry_run: bool = False
 
     @classmethod
-    def create(cls, root_dir: Path, run_id: str | None = None, dry_run: bool = False) -> "RunContext":
+    def create(
+        cls,
+        root_dir: Path,
+        run_id: str | None = None,
+        dry_run: bool = False,
+        adapter_name: str | None = None,
+        model_name: str | None = None,
+    ) -> "RunContext":
         resolved_run_id = run_id or new_run_id()
-        log_dir = root_dir / "logs" / resolved_run_id
-        return cls(run_id=resolved_run_id, root_dir=root_dir, log_dir=log_dir, dry_run=dry_run)
+        resolved_root = root_dir.resolve()
+        # logs/<adapter>/<model>/<run_id>/
+        log_parts: list[str] = ["logs"]
+        if adapter_name:
+            log_parts.append(_safe_dirname(adapter_name))
+        if model_name:
+            log_parts.append(_safe_dirname(model_name))
+        log_parts.append(resolved_run_id)
+        log_dir = resolved_root.joinpath(*log_parts)
+        return cls(run_id=resolved_run_id, root_dir=resolved_root, log_dir=log_dir, dry_run=dry_run)
 
 
 @dataclass(frozen=True)

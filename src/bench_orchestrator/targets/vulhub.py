@@ -13,6 +13,10 @@ from bench_orchestrator.targets.base import TargetProvider
 
 COMPOSE_FILENAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
 
+# Fixed network shared by all target containers and the Kali attacker.
+# Created and owned by the companion docker-compose.yml.
+BENCH_TARGET_NETWORK = "bench_target"
+
 
 class VulhubManifestGenerator:
     """Generate draft manifests from a local Vulhub tree."""
@@ -86,59 +90,53 @@ class VulhubTargetProvider(TargetProvider):
     def start(self, manifest: Manifest, context: RunContext, recorder: RunRecorder) -> TargetHandle:
         source_dir = require_source_dir(manifest)
         project_name = docker_project_name(context.run_id, manifest.id)
-        network_name = f"bench_{context.run_id}"
         target_alias = manifest.raw.get("network", {}).get("target_alias", "target")
         if context.dry_run:
             recorder.event(
                 "target_started",
-                {"dry_run": True, "project_name": project_name, "network_name": network_name},
+                {"dry_run": True, "project_name": project_name, "network_name": BENCH_TARGET_NETWORK},
             )
             return TargetHandle(
                 provider=self.name,
                 target_id=manifest.id,
-                network_name=network_name,
+                network_name=BENCH_TARGET_NETWORK,
                 target_alias=target_alias,
                 metadata={"project_name": project_name, "source_dir": str(source_dir)},
             )
 
-        run_command(["docker", "network", "create", network_name], recorder, check=False)
-        compose_started = False
         try:
             run_command(
                 ["docker", "compose", "-p", project_name, "up", "-d", "--remove-orphans"],
                 recorder,
                 cwd=source_dir,
             )
-            compose_started = True
 
-            # Connect all compose containers to the bench network so agent containers
-            # on that network can reach the target by alias.
+            # Connect all target containers to bench_target so Kali and agent
+            # containers on that network can reach the target by alias.
             primary_container_id = _attach_compose_to_network(
-                project_name, network_name, target_alias, manifest, recorder
+                project_name, BENCH_TARGET_NETWORK, target_alias, manifest, recorder
             )
         except Exception:
-            if compose_started:
-                run_command(
-                    ["docker", "compose", "-p", project_name, "down", "--remove-orphans"],
-                    recorder,
-                    cwd=source_dir,
-                    check=False,
-                )
-            run_command(["docker", "network", "rm", network_name], recorder, check=False)
+            run_command(
+                ["docker", "compose", "-p", project_name, "down", "--remove-orphans"],
+                recorder,
+                cwd=source_dir,
+                check=False,
+            )
             raise
 
         recorder.event(
             "target_started",
             {
                 "project_name": project_name,
-                "network_name": network_name,
+                "network_name": BENCH_TARGET_NETWORK,
                 "primary_container_id": primary_container_id,
             },
         )
         return TargetHandle(
             provider=self.name,
             target_id=manifest.id,
-            network_name=network_name,
+            network_name=BENCH_TARGET_NETWORK,
             target_alias=target_alias,
             metadata={
                 "project_name": project_name,
@@ -194,9 +192,9 @@ class VulhubTargetProvider(TargetProvider):
         source_dir = Path(handle.metadata.get("source_dir", require_source_dir(manifest)))
         project_name = handle.metadata.get("project_name")
         if project_name and not recorder.context.dry_run:
+            # bench_target is owned by the companion docker-compose; only bring
+            # down the target containers, not the shared network.
             run_command(["docker", "compose", "-p", str(project_name), "down", "--remove-orphans"], recorder, cwd=source_dir, check=False)
-        if handle.network_name and not recorder.context.dry_run:
-            run_command(["docker", "network", "rm", handle.network_name], recorder, check=False)
         recorder.event("teardown_completed", {"provider": self.name, "target_id": handle.target_id})
 
 
@@ -255,8 +253,27 @@ def require_source_dir(manifest: Manifest) -> Path:
 
 
 def docker_project_name(run_id: str, manifest_id: str) -> str:
+    """Return a Docker Compose project name for the given run and manifest.
+
+    The 63-character limit is derived from RFC 1035, which caps each DNS label
+    at 63 octets.  For providers that do not set an explicit container_name in
+    their compose files (e.g. VulHub), Docker Compose generates container names
+    as ``{project}_{service}_1``.  Those container names are registered in
+    Docker's internal DNS and must therefore be valid DNS labels.  The project
+    name is the dominant component, so capping it at 63 characters ensures that
+    even a short service name and replica suffix fit within the label limit.
+
+    When the slug derived from the manifest ID exceeds the available space, it
+    is truncated from the left rather than the right.  This preserves the vm
+    identifier at the end of the slug (e.g. ``vm0``, ``vm10``), which is the
+    most meaningful part for distinguishing containers within a category.
+    """
     slug = "".join(ch if ch.isalnum() else "_" for ch in manifest_id.lower()).strip("_")
-    return f"bench_{run_id}_{slug}".lower()[:63]
+    prefix = f"bench_{run_id}_".lower()
+    available = 63 - len(prefix)
+    if len(slug) > available:
+        slug = slug[-available:].lstrip("_")
+    return f"{prefix}{slug}"
 
 
 def run_command(
@@ -322,13 +339,12 @@ def _find_primary_container(container_ids: list[str], port: str | None) -> str |
     if not port:
         return None
     result = subprocess.run(
-        ["docker", "ps", "--filter", f"publish={port}", "-q", "--no-trunc"],
+        ["docker", "ps", "--filter", f"publish={port}", "-q"],
         capture_output=True, text=True,
     )
     published = {c.strip() for c in result.stdout.splitlines() if c.strip()}
-    # docker ps -q returns short IDs; match against potentially long IDs
     for cid in container_ids:
-        if cid[:12] in published or cid in published:
+        if cid in published:
             return cid
     return None
 

@@ -1,0 +1,64 @@
+# Companion infrastructure for benchmark runs (Kali attacker + MySQL session store).
+#
+# Bring up via the CLI (reads kali.image from agent config):
+#   bench-orchestrator infra up --agent-config configs/vulnbot.yaml
+#
+# Or directly (uses KALI_IMAGE env var, falls back to kali-headless-base):
+#   docker compose up -d
+
+networks:
+  bench_attacker:
+    name: bench_attacker
+    # Fixed subnet so Kali can be assigned a static IP and sshd bound to only
+    # this interface, preventing port 22 from appearing on bench_target.
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+  bench_target:
+    name: bench_target
+
+services:
+  mysql:
+    image: mysql:8
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: vulnbot
+      MYSQL_USER: vulnbot
+      MYSQL_PASSWORD: vulnbot
+      MYSQL_ROOT_PASSWORD: root
+    networks:
+      bench_attacker:
+        aliases:
+          - mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uvulnbot", "-pvulnbot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  kali:
+    build: ./kali
+    image: ${KALI_IMAGE:-bench-kali}
+    restart: unless-stopped
+    networks:
+      bench_attacker:
+        # Static IP so sshd ListenAddress can be hardcoded. VulnBot connects
+        # via the 'kali' alias on bench_attacker, so this is transparent to it.
+        ipv4_address: 172.30.0.10
+        aliases:
+          - kali
+      bench_target:
+        aliases:
+          - kali
+    # Set root password, enable SSH password auth, then start sshd bound only
+    # to the bench_attacker interface. This ensures port 22 is never visible to
+    # containers on bench_target, preserving network separation.
+    command: >
+      sh -c "echo 'root:root' | chpasswd &&
+             sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config &&
+             sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config &&
+             /usr/sbin/sshd -D -o ListenAddress=172.30.0.10"
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+      - SYS_PTRACE
