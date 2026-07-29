@@ -21,6 +21,6 @@ def build_agent_adapter(
             raise ValueError("--pentest-agent-dir is required for the pentest-agent adapter")
         return PentestAgentAdapter(pentest_agent_dir=pentest_agent_dir, agent_config=agent_config)
     if name == "vulnbot":
-        return VulnBotAdapter(image=vulnbot_image)
+        return VulnBotAdapter(image=vulnbot_image, agent_config=agent_config)
     raise ValueError(f"unknown agent adapter: {name}")
 

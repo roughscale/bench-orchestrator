@@ -1,0 +1,23 @@
+adapter: vulnbot
+max_interactions: 15
+timeout_seconds: 3600
+
+model: deepseek-v4-pro
+llm_model: openai
+base_url: https://api.deepseek.com/v1
+# API key is read from DEEPSEEK_API_KEY env var at run time.
+api_key_env: DEEPSEEK_API_KEY
+
+kali:
+  image: kali-headless-base-arm64
+  hostname: kali
+  port: 22
+  username: root
+  password: root
+
+mysql:
+  host: mysql
+  port: 3306
+  user: vulnbot
+  password: vulnbot
+  database: vulnbot

@@ -26,7 +26,12 @@ class BenchmarkRunner:
         self.dry_run = dry_run
 
     def run_task(self, manifest: Manifest) -> list[ScoreResult]:
-        context = RunContext.create(self.root_dir, dry_run=self.dry_run)
+        context = RunContext.create(
+            self.root_dir,
+            dry_run=self.dry_run,
+            adapter_name=self.agent_adapter.name,
+            model_name=self.agent_adapter.model_name,
+        )
         recorder = RunRecorder(context)
         recorder.initialize(
             {
@@ -39,9 +44,10 @@ class BenchmarkRunner:
         try:
             self.target_provider.prepare(manifest, context, recorder)
             handle = self.target_provider.start(manifest, context, recorder)
-            health = self.target_provider.healthcheck(handle, manifest, recorder)
-            if not health.ready:
-                raise RuntimeError(f"target not healthy: {health.message}")
+            if not self.dry_run:
+                health = self.target_provider.healthcheck(handle, manifest, recorder)
+                if not health.ready:
+                    raise RuntimeError(f"target not healthy: {health.message}")
             self.agent_adapter.prepare(manifest, handle, context, recorder)
             result = self.agent_adapter.run(manifest, handle, context, recorder)
             scores = [scorer.evaluate(manifest, handle, result) for scorer in self.scorers]

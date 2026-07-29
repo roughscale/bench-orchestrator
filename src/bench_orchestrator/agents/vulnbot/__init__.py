@@ -13,6 +13,13 @@ from bench_orchestrator.evidence import RunRecorder
 from bench_orchestrator.models import AgentResult, Manifest, RunContext, TargetHandle
 
 
+# VulnBot runs on the attacker network alongside Kali and MySQL.
+# Kali bridges this network and bench_target so it can reach the target.
+_ATTACKER_NETWORK = "bench_attacker"
+
+# Infrastructure compose file is co-located with this adapter package.
+COMPOSE_FILE = Path(__file__).parent / "docker-compose.yml"
+
 _FORWARDED_ENV = [
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
@@ -37,10 +44,23 @@ class VulnBotAdapter(AgentAdapter):
 
     name = "vulnbot"
 
-    def __init__(self, image: str = "vulnbot:latest") -> None:
+    def __init__(
+        self,
+        image: str = "vulnbot:latest",
+        agent_config: dict[str, Any] | None = None,
+    ) -> None:
         self.image = image
+        self._agent_config: dict[str, Any] = agent_config or {}
         self._container_name: str | None = None
         self._workspace_dir: Path | None = None
+
+    @property
+    def model_name(self) -> str | None:
+        return self._agent_config.get("model") or None
+
+    @property
+    def compose_file(self) -> Path:
+        return COMPOSE_FILE
 
     def prepare(
         self,
@@ -56,17 +76,17 @@ class VulnBotAdapter(AgentAdapter):
         container_name = _container_name(context.run_id)
         workspace_dir = recorder.artifact_dir / "vulnbot_workspace"
         workspace_dir.mkdir(parents=True, exist_ok=True)
-        write_vulnbot_config(manifest, target, workspace_dir)
+        write_vulnbot_config(manifest, target, workspace_dir, self._agent_config)
 
         _docker_run(
             container_name=container_name,
             image=self.image,
-            network=target.network_name,
+            network=_ATTACKER_NETWORK,
             workspace_dir=workspace_dir,
-            env_values=_env_values(manifest),
+            env_values=_env_values(self._agent_config),
             recorder=recorder,
         )
-        if _adapter_config(manifest).get("init_db", True):
+        if self._agent_config.get("init_db", True):
             _initialize_vulnbot_database(container_name, recorder)
 
         self._container_name = container_name
@@ -78,7 +98,7 @@ class VulnBotAdapter(AgentAdapter):
                 "container": container_name,
                 "image": self.image,
                 "workspace_dir": str(workspace_dir),
-                "target": resolve_target(manifest, target),
+                "target": resolve_target(manifest, target, self._agent_config),
             },
         )
 
@@ -89,9 +109,9 @@ class VulnBotAdapter(AgentAdapter):
         context: RunContext,
         recorder: RunRecorder,
     ) -> AgentResult:
-        command = build_vulnbot_command(manifest)
-        stdin = build_vulnbot_stdin(manifest, target, context)
-        timeout = _timeout_seconds(manifest)
+        command = build_vulnbot_command(self._agent_config)
+        stdin = build_vulnbot_stdin(manifest, target, self._agent_config, context)
+        timeout = _timeout_seconds(self._agent_config)
 
         if context.dry_run:
             recorder.event(
@@ -106,7 +126,7 @@ class VulnBotAdapter(AgentAdapter):
             return AgentResult(
                 status="completed",
                 summary="Dry-run VulnBot adapter execution.",
-                metadata={"command": command, "target": resolve_target(manifest, target)},
+                metadata={"command": command, "target": resolve_target(manifest, target, self._agent_config)},
             )
 
         if self._container_name is None:
@@ -201,28 +221,39 @@ class VulnBotAdapter(AgentAdapter):
         self._container_name = None
 
 
-def build_vulnbot_command(manifest: Manifest) -> list[str]:
-    cfg = _adapter_config(manifest)
+def build_vulnbot_command(agent_config: dict[str, Any]) -> list[str]:
+    cfg = agent_config
     command = cfg.get("command")
     if command:
         if not isinstance(command, list):
-            raise ValueError("agent.vulnbot.command must be a list of strings")
+            raise ValueError("vulnbot agent config 'command' must be a list of strings")
         return [str(part) for part in command]
 
-    max_interactions = int(cfg.get("max_interactions", manifest.raw.get("agent", {}).get("max_iterations", 5)))
+    max_interactions = int(cfg.get("max_interactions", 5))
     cli_path = str(cfg.get("cli_path", "cli.py"))
     return ["python", "-u", cli_path, "vulnbot", "-m", str(max_interactions)]
 
 
-def build_vulnbot_stdin(manifest: Manifest, target: TargetHandle, context: RunContext | None = None) -> str:
-    cfg = _adapter_config(manifest)
+def build_vulnbot_stdin(manifest: Manifest, target: TargetHandle, agent_config: dict[str, Any], context: RunContext | None = None) -> str:
+    cfg = agent_config
     session_name = str(cfg.get("session_name") or (context.run_id if context else manifest.id.replace("/", "_")))
 
-    # Answers, in order:
-    # 1. Do not resume a previous VulnBot session.
-    # 2. Provide the benchmark task description.
-    # 3. Save the session under a deterministic name before exit.
-    return "\n".join(["n", instruction(manifest, target), session_name, ""])
+    # prompt_toolkit's confirm() reads a single character ('n'), not a full line.
+    # A newline separator between 'n' and the task description would be left in
+    # the buffer and consumed by the task prompt as an empty line, shifting the
+    # instruction to the session-save prompt.  Concatenate 'n' directly with
+    # the instruction so the task prompt reads the correct input.
+    #
+    # Sequence:
+    #   1. confirm() → 'n'  (no trailing newline consumed)
+    #   2. prompt(task) → instruction
+    #   3. prompt(session name) → session_name
+    # Some manifest task fields contain embedded newlines (e.g. network_security,
+    # real-world/cve categories append a hint on a second line).  A newline inside
+    # the instruction would be consumed by the task prompt as a line terminator,
+    # shifting the session-name input to the wrong prompt.  Collapse to a single line.
+    task_instruction = instruction(manifest, target, agent_config).replace("\n", " ")
+    return f"n{task_instruction}\n{session_name}\n"
 
 
 def parse_vulnbot_output(stdout: str) -> dict[str, Any]:
@@ -235,8 +266,8 @@ def parse_vulnbot_output(stdout: str) -> dict[str, Any]:
     return metadata
 
 
-def write_vulnbot_config(manifest: Manifest, target: TargetHandle, workspace_dir: Path) -> None:
-    cfg = _adapter_config(manifest)
+def write_vulnbot_config(manifest: Manifest, target: TargetHandle, workspace_dir: Path, agent_config: dict[str, Any] | None = None) -> None:
+    cfg = agent_config or {}
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
     basic = {
@@ -263,8 +294,16 @@ def write_vulnbot_config(manifest: Manifest, target: TargetHandle, workspace_dir
         "top_k": int(cfg.get("top_k", 3)),
         "score_threshold": float(cfg.get("score_threshold", 0.5)),
     }
+    # Resolve API key: prefer explicit value in config, then a named env var
+    # (api_key_env), then the standard fallback env vars.
+    api_key = (
+        cfg.get("api_key")
+        or os.environ.get(cfg.get("api_key_env", ""), "")
+        or os.environ.get("VULNBOT_API_KEY", "")
+        or os.environ.get("OPENAI_API_KEY", "")
+    )
     llm = {
-        "api_key": str(cfg.get("api_key", "")),
+        "api_key": str(api_key),
         "llm_model": str(cfg.get("llm_model", os.environ.get("VULNBOT_LLM_MODEL", "openai"))),
         "base_url": str(cfg.get("base_url", os.environ.get("VULNBOT_BASE_URL", os.environ.get("OPENAI_BASE_URL", "")))),
         "llm_model_name": str(cfg.get("model", os.environ.get("VULNBOT_LLM_MODEL_NAME", ""))),
@@ -291,8 +330,8 @@ def write_vulnbot_config(manifest: Manifest, target: TargetHandle, workspace_dir
     (workspace_dir / "data" / "knowledge_base").mkdir(parents=True, exist_ok=True)
 
 
-def resolve_target(manifest: Manifest, target: TargetHandle) -> str:
-    cfg = _adapter_config(manifest)
+def resolve_target(manifest: Manifest, target: TargetHandle, agent_config: dict[str, Any] | None = None) -> str:
+    cfg = agent_config or {}
     if cfg.get("target"):
         return str(cfg["target"])
     if target.endpoint:
@@ -311,17 +350,36 @@ def resolve_target(manifest: Manifest, target: TargetHandle) -> str:
     return str(alias)
 
 
-def instruction(manifest: Manifest, target: TargetHandle) -> str:
-    cfg = _adapter_config(manifest)
+def instruction(manifest: Manifest, target: TargetHandle, agent_config: dict[str, Any] | None = None) -> str:
+    cfg = agent_config or {}
     if cfg.get("instruction"):
         return str(cfg["instruction"])
 
+    target_host = target.target_alias or "target"
     parts = [
         "Authorized benchmark target. Operate only against the supplied lab target.",
-        f"Target: {resolve_target(manifest, target)}.",
+        f"Target: {resolve_target(manifest, target, agent_config)}.",
     ]
+
+    task = manifest.raw.get("task", "")
+    if task:
+        # Render {target_host} and {target_net} placeholders.
+        # {target_net}  — the CIDR range the agent should scan.
+        # {target_host} — the attacker's own IP on that network (Kali), which the
+        #                 agent should exclude from scans so it doesn't scan itself.
+        #                 This is NOT the target's IP; that would tell the agent to
+        #                 skip the very machine it needs to find.
+        target_ip = target.metadata.get("target_ip") or target_host
+        target_net = target.metadata.get("target_net") or target_ip
+        attacker_ip = target.metadata.get("attacker_ip") or target_host
+        try:
+            task = task.format(target_host=attacker_ip, target_net=target_net)
+        except (KeyError, ValueError):
+            pass
+        parts.append(f"Task: {task}")
+
     goal = manifest.raw.get("goal", {})
-    if goal.get("kind"):
+    if goal.get("kind") and not task:
         parts.append(f"Goal: {goal['kind']}.")
     if goal.get("description"):
         parts.append(str(goal["description"]))
@@ -330,9 +388,6 @@ def instruction(manifest: Manifest, target: TargetHandle) -> str:
     return " ".join(parts)
 
 
-def _adapter_config(manifest: Manifest) -> dict[str, Any]:
-    agent = manifest.raw.get("agent", {})
-    return dict(agent.get("vulnbot", {}))
 
 
 def _kali_config(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -356,9 +411,8 @@ def _db_config(cfg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _timeout_seconds(manifest: Manifest) -> int:
-    cfg = _adapter_config(manifest)
-    return int(cfg.get("timeout_seconds", manifest.raw.get("agent", {}).get("timeout_seconds", 3600)))
+def _timeout_seconds(agent_config: dict[str, Any]) -> int:
+    return int(agent_config.get("timeout_seconds", 3600))
 
 
 def _container_name(run_id: str) -> str:
@@ -428,15 +482,27 @@ def _docker_exec(
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
+        # exc.stdout / exc.stderr can be bytes even when text=True is passed to
+        # subprocess.run — Python captures partial output before decoding when a
+        # timeout fires.  Decode defensively to avoid a TypeError on concatenation.
+        def _to_str(b: bytes | str | None) -> str:
+            if isinstance(b, bytes):
+                return b.decode(errors="replace")
+            return b or ""
+
         return subprocess.CompletedProcess(
             args=full_cmd,
             returncode=124,
-            stdout=exc.stdout or "",
-            stderr=(exc.stderr or "") + f"\nVulnBot timed out after {timeout}s",
+            stdout=_to_str(exc.stdout),
+            stderr=_to_str(exc.stderr) + f"\nVulnBot timed out after {timeout}s",
         )
 
 
 def _initialize_vulnbot_database(container_name: str, recorder: RunRecorder) -> None:
+    # `cli.py init` imports all SQLAlchemy model modules before calling
+    # create_tables(), which is required for Base.metadata to know about
+    # all tables. A bare create_tables() call without the model imports
+    # produces an empty schema.
     cmd = [
         "docker",
         "exec",
@@ -444,8 +510,9 @@ def _initialize_vulnbot_database(container_name: str, recorder: RunRecorder) -> 
         _CONTAINER_WORKDIR,
         container_name,
         "python",
-        "-c",
-        "from utils.session import create_tables; create_tables()",
+        "-u",
+        "cli.py",
+        "init",
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
     recorder.command(
@@ -460,8 +527,8 @@ def _initialize_vulnbot_database(container_name: str, recorder: RunRecorder) -> 
         raise RuntimeError(f"failed to initialize VulnBot database: {result.stderr.strip()}")
 
 
-def _env_values(manifest: Manifest) -> dict[str, str]:
-    cfg = _adapter_config(manifest)
+def _env_values(agent_config: dict[str, Any]) -> dict[str, str]:
+    cfg = agent_config
     values = {key: value for key in _FORWARDED_ENV if (value := os.environ.get(key))}
 
     api_key_env = str(cfg.get("api_key_env", ""))

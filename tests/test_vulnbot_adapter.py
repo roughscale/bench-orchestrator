@@ -21,22 +21,13 @@ def test_factory_builds_vulnbot_adapter_with_roughscale_image() -> None:
     assert adapter.image == "ghcr.io/roughscale/vulnbot:test"
 
 
-def test_build_command_uses_manifest_config() -> None:
-    manifest = Manifest(
-        raw={
-            "id": "lab/example",
-            "provider": "static_host",
-            "agent": {
-                "adapter": "vulnbot",
-                "vulnbot": {
-                    "max_interactions": 7,
-                    "cli_path": "/opt/VulnBot/cli.py",
-                },
-            },
-        }
-    )
+def test_build_command_uses_agent_config() -> None:
+    agent_config = {
+        "max_interactions": 7,
+        "cli_path": "/opt/VulnBot/cli.py",
+    }
 
-    assert build_vulnbot_command(manifest) == [
+    assert build_vulnbot_command(agent_config) == [
         "python",
         "-u",
         "/opt/VulnBot/cli.py",
@@ -52,16 +43,15 @@ def test_build_stdin_declines_resume_and_injects_instruction() -> None:
             "id": "vulhub/example",
             "provider": "vulhub",
             "network": {"exposed_ports": ["8080/tcp"]},
-            "agent": {
-                "adapter": "vulnbot",
-                "vulnbot": {"scheme": "http", "instruction": "Find the benchmark proof."},
-            },
         }
     )
     target = TargetHandle(provider="vulhub", target_id="vulhub/example", target_alias="target")
+    agent_config = {"scheme": "http", "instruction": "Find the benchmark proof."}
     context = RunContext.create(Path("/tmp/bench"), run_id="run_123")
 
-    assert build_vulnbot_stdin(manifest, target, context) == "n\nFind the benchmark proof.\nrun_123\n"
+    # 'n' has no trailing newline: prompt_toolkit confirm() reads a single char,
+    # so the instruction is concatenated directly to avoid an empty line shift.
+    assert build_vulnbot_stdin(manifest, target, agent_config, context) == "nFind the benchmark proof.\nrun_123\n"
 
 
 def test_resolve_target_derives_target_from_network_alias_and_port() -> None:
@@ -70,44 +60,36 @@ def test_resolve_target_derives_target_from_network_alias_and_port() -> None:
             "id": "vulhub/example",
             "provider": "vulhub",
             "network": {"exposed_ports": ["8080/tcp"]},
-            "agent": {"adapter": "vulnbot", "vulnbot": {"scheme": "http"}},
         }
     )
     target = TargetHandle(provider="vulhub", target_id="vulhub/example", target_alias="target")
+    agent_config = {"scheme": "http"}
 
-    assert resolve_target(manifest, target) == "http://target:8080"
+    assert resolve_target(manifest, target, agent_config) == "http://target:8080"
 
 
 def test_write_config_files_for_vulnbot_runtime(tmp_path: Path) -> None:
-    manifest = Manifest(
-        raw={
-            "id": "lab/example",
-            "provider": "static_host",
-            "agent": {
-                "adapter": "vulnbot",
-                "vulnbot": {
-                    "model": "gpt-4o-mini",
-                    "base_url": "https://api.openai.com/v1",
-                    "kali": {
-                        "hostname": "kali",
-                        "port": 2222,
-                        "username": "pentester",
-                        "password": "secret",
-                    },
-                    "mysql": {
-                        "host": "mysql",
-                        "port": 3307,
-                        "user": "vulnbot",
-                        "password": "vulnbot",
-                        "database": "vulnbot",
-                    },
-                },
-            },
-        }
-    )
+    manifest = Manifest(raw={"id": "lab/example", "provider": "static_host"})
     target = TargetHandle(provider="static_host", target_id="lab/example", endpoint="http://target")
+    agent_config = {
+        "model": "gpt-4o-mini",
+        "base_url": "https://api.openai.com/v1",
+        "kali": {
+            "hostname": "kali",
+            "port": 2222,
+            "username": "pentester",
+            "password": "secret",
+        },
+        "mysql": {
+            "host": "mysql",
+            "port": 3307,
+            "user": "vulnbot",
+            "password": "vulnbot",
+            "database": "vulnbot",
+        },
+    }
 
-    write_vulnbot_config(manifest, target, tmp_path)
+    write_vulnbot_config(manifest, target, tmp_path, agent_config)
 
     basic = yaml.safe_load((tmp_path / "basic_config.yaml").read_text(encoding="utf-8"))
     db = yaml.safe_load((tmp_path / "db_config.yaml").read_text(encoding="utf-8"))

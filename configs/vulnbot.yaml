@@ -1,0 +1,26 @@
+adapter: vulnbot
+# Paper (arXiv:2501.13411) uses 15 steps per phase execution, temperature 0.5.
+# Models used in paper: GPT-4o, Llama3.1-405B, Llama3.3-70B, DeepSeek-V3.
+max_interactions: 15
+timeout_seconds: 3600
+
+# LLM settings. api_key falls back to OPENAI_API_KEY env var if not set here.
+model: gpt-4o
+base_url: https://api.openai.com/v1
+# api_key: set via OPENAI_API_KEY env var
+
+# Kali execution host (SSH). Must be reachable on bench_attacker network.
+kali:
+  image: kali-headless-base-arm64
+  hostname: kali
+  port: 22
+  username: root
+  password: root
+
+# MySQL session store. Must be reachable on bench_attacker network.
+mysql:
+  host: mysql
+  port: 3306
+  user: vulnbot
+  password: vulnbot
+  database: vulnbot
