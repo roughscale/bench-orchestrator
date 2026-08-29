@@ -1,0 +1,7 @@
+adapter: cai
+model: gpt-5.6-terra
+agent_type: redteam_agent
+reasoning_effort: low
+max_turns: 100
+timeout_seconds: 3600
+# guardrails: false     # default; bench targets are authorized, container is disposable
