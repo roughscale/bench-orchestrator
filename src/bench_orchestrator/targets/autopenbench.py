@@ -8,7 +8,6 @@ from bench_orchestrator.evidence import RunRecorder
 from bench_orchestrator.models import HealthStatus, Manifest, RunContext, TargetHandle
 from bench_orchestrator.targets.base import TargetProvider
 from bench_orchestrator.targets.vulhub import (
-    BENCH_TARGET_NETWORK,
     _attach_compose_to_network,
     docker_project_name,
     run_command,
@@ -62,15 +61,18 @@ class AutoPenBenchTargetProvider(TargetProvider):
         target_alias = manifest.raw.get("network", {}).get("target_alias", "target")
         kali_ip = manifest.raw.get("network", {}).get("kali_ip") or None
 
+        network_name = context.target_network or f"bench_run_{context.run_id}"
+        network_owned = context.target_network is None
+
         if context.dry_run:
             recorder.event(
                 "target_started",
-                {"dry_run": True, "project_name": project, "network_name": BENCH_TARGET_NETWORK},
+                {"dry_run": True, "project_name": project, "network_name": network_name},
             )
             return TargetHandle(
                 provider=self.name,
                 target_id=manifest.id,
-                network_name=BENCH_TARGET_NETWORK,
+                network_name=network_name,
                 target_alias=target_alias,
                 metadata={
                     "project_name": project,
@@ -78,11 +80,15 @@ class AutoPenBenchTargetProvider(TargetProvider):
                     "compose_file": str(compose_file),
                     "services": services,
                     "kali_project_network": project_net,
+                    "network_owned": network_owned,
                 },
             )
 
         kali_connected = False
         try:
+            if network_owned:
+                run_command(["docker", "network", "create", network_name], recorder, check=False)
+
             # --project-directory ensures relative volume/build paths inside the
             # category compose files resolve from the machines root, which is the
             # convention AutoPenBench uses for its compose files.
@@ -98,7 +104,7 @@ class AutoPenBenchTargetProvider(TargetProvider):
                 cwd=machines_dir,
             )
             primary_container_id = _attach_compose_to_network(
-                project, BENCH_TARGET_NETWORK, target_alias, manifest, recorder
+                project, network_name, target_alias, manifest, recorder
             )
 
             # Connect Kali to the project's net-main_network so that traffic
@@ -124,6 +130,8 @@ class AutoPenBenchTargetProvider(TargetProvider):
                 cwd=machines_dir,
                 check=False,
             )
+            if network_owned:
+                run_command(["docker", "network", "rm", network_name], recorder, check=False)
             raise
 
         target_ip, target_net = _inspect_network(primary_container_id, project_net)
@@ -133,7 +141,8 @@ class AutoPenBenchTargetProvider(TargetProvider):
             "target_started",
             {
                 "project_name": project,
-                "network_name": BENCH_TARGET_NETWORK,
+                "network_name": network_name,
+                "network_owned": network_owned,
                 "primary_container_id": primary_container_id,
                 "target_ip": target_ip,
                 "target_net": target_net,
@@ -143,7 +152,7 @@ class AutoPenBenchTargetProvider(TargetProvider):
         return TargetHandle(
             provider=self.name,
             target_id=manifest.id,
-            network_name=BENCH_TARGET_NETWORK,
+            network_name=network_name,
             target_alias=target_alias,
             metadata={
                 "project_name": project,
@@ -155,6 +164,7 @@ class AutoPenBenchTargetProvider(TargetProvider):
                 "target_net": target_net,
                 "attacker_ip": attacker_ip,
                 "kali_project_network": project_net,
+                "network_owned": network_owned,
             },
         )
 
@@ -235,6 +245,8 @@ class AutoPenBenchTargetProvider(TargetProvider):
                     cwd=Path(machines_dir),
                     check=False,
                 )
+            if handle.metadata.get("network_owned") and handle.network_name:
+                run_command(["docker", "network", "rm", handle.network_name], recorder, check=False)
         recorder.event("teardown_completed", {"provider": self.name, "target_id": handle.target_id})
 
 

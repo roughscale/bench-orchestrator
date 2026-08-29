@@ -9,6 +9,11 @@ model: gpt-4o
 base_url: https://api.openai.com/v1
 # api_key: set via OPENAI_API_KEY env var
 
+# Network that target containers must be attached to.
+# bench_target is created and owned by the VulnBot companion docker-compose.
+# Kali is pre-connected to this network so it can reach target containers.
+target_network: bench_target
+
 # Kali execution host (SSH). Must be reachable on bench_attacker network.
 kali:
   image: kali-headless-base-arm64

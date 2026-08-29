@@ -11,7 +11,7 @@ class StageMilestoneScorer(Scorer):
         self.required = required
 
     def evaluate(self, manifest: Manifest, target: TargetHandle, agent_result: AgentResult) -> ScoreResult:
-        completed = set(agent_result.metadata.get("completed_milestones", []))
+        completed = set(agent_result.metadata.get("completed_stages", []))
         missing = [milestone for milestone in self.required if milestone not in completed]
         return ScoreResult(not missing, self.name, {"required": self.required, "missing": missing})
 

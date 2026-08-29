@@ -22,7 +22,7 @@ network:
   exposed_ports:
   - 5601/tcp
 target:
-  startup_timeout_seconds: 120
+  startup_timeout_seconds: 600
   health:
   - type: http
     url: http://target:5601/

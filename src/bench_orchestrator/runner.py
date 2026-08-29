@@ -31,6 +31,7 @@ class BenchmarkRunner:
             dry_run=self.dry_run,
             adapter_name=self.agent_adapter.name,
             model_name=self.agent_adapter.model_name,
+            target_network=self.agent_adapter.required_target_network(),
         )
         recorder = RunRecorder(context)
         recorder.initialize(
@@ -59,6 +60,7 @@ class BenchmarkRunner:
         finally:
             if handle is not None:
                 self.target_provider.collect_logs(handle, manifest, recorder)
-                self.target_provider.stop(handle, manifest, recorder)
             self.agent_adapter.stop(recorder)
+            if handle is not None:
+                self.target_provider.stop(handle, manifest, recorder)
 

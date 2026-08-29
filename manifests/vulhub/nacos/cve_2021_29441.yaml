@@ -28,7 +28,7 @@ target:
   startup_timeout_seconds: 120
   health:
   - type: http
-    url: http://target:8848/
+    url: http://target:8848/nacos/
     expect_status:
     - 200
     - 302

@@ -13,10 +13,6 @@ from bench_orchestrator.targets.base import TargetProvider
 
 COMPOSE_FILENAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
 
-# Fixed network shared by all target containers and the Kali attacker.
-# Created and owned by the companion docker-compose.yml.
-BENCH_TARGET_NETWORK = "bench_target"
-
 
 class VulhubManifestGenerator:
     """Generate draft manifests from a local Vulhub tree."""
@@ -91,30 +87,41 @@ class VulhubTargetProvider(TargetProvider):
         source_dir = require_source_dir(manifest)
         project_name = docker_project_name(context.run_id, manifest.id)
         target_alias = manifest.raw.get("network", {}).get("target_alias", "target")
+
+        # Use the adapter-declared fixed network if one was specified; otherwise
+        # create a per-run network that we own and will clean up on stop().
+        network_name = context.target_network or f"bench_run_{context.run_id}"
+        network_owned = context.target_network is None
+
         if context.dry_run:
             recorder.event(
                 "target_started",
-                {"dry_run": True, "project_name": project_name, "network_name": BENCH_TARGET_NETWORK},
+                {"dry_run": True, "project_name": project_name, "network_name": network_name},
             )
             return TargetHandle(
                 provider=self.name,
                 target_id=manifest.id,
-                network_name=BENCH_TARGET_NETWORK,
+                network_name=network_name,
                 target_alias=target_alias,
-                metadata={"project_name": project_name, "source_dir": str(source_dir)},
+                metadata={
+                    "project_name": project_name,
+                    "source_dir": str(source_dir),
+                    "network_owned": network_owned,
+                },
             )
 
         try:
+            if network_owned:
+                run_command(["docker", "network", "create", network_name], recorder, check=False)
+
             run_command(
                 ["docker", "compose", "-p", project_name, "up", "-d", "--remove-orphans"],
                 recorder,
                 cwd=source_dir,
             )
 
-            # Connect all target containers to bench_target so Kali and agent
-            # containers on that network can reach the target by alias.
             primary_container_id = _attach_compose_to_network(
-                project_name, BENCH_TARGET_NETWORK, target_alias, manifest, recorder
+                project_name, network_name, target_alias, manifest, recorder
             )
         except Exception:
             run_command(
@@ -123,25 +130,29 @@ class VulhubTargetProvider(TargetProvider):
                 cwd=source_dir,
                 check=False,
             )
+            if network_owned:
+                run_command(["docker", "network", "rm", network_name], recorder, check=False)
             raise
 
         recorder.event(
             "target_started",
             {
                 "project_name": project_name,
-                "network_name": BENCH_TARGET_NETWORK,
+                "network_name": network_name,
+                "network_owned": network_owned,
                 "primary_container_id": primary_container_id,
             },
         )
         return TargetHandle(
             provider=self.name,
             target_id=manifest.id,
-            network_name=BENCH_TARGET_NETWORK,
+            network_name=network_name,
             target_alias=target_alias,
             metadata={
                 "project_name": project_name,
                 "source_dir": str(source_dir),
                 "primary_container_id": primary_container_id,
+                "network_owned": network_owned,
             },
         )
 
@@ -192,9 +203,9 @@ class VulhubTargetProvider(TargetProvider):
         source_dir = Path(handle.metadata.get("source_dir", require_source_dir(manifest)))
         project_name = handle.metadata.get("project_name")
         if project_name and not recorder.context.dry_run:
-            # bench_target is owned by the companion docker-compose; only bring
-            # down the target containers, not the shared network.
             run_command(["docker", "compose", "-p", str(project_name), "down", "--remove-orphans"], recorder, cwd=source_dir, check=False)
+            if handle.metadata.get("network_owned") and handle.network_name:
+                run_command(["docker", "network", "rm", handle.network_name], recorder, check=False)
         recorder.event("teardown_completed", {"provider": self.name, "target_id": handle.target_id})
 
 
@@ -361,7 +372,7 @@ def _run_health_check(check: dict[str, Any]) -> tuple[bool, str | None]:
             # host and reaches containers through the bound ports, not the bench network.
             url = check.get("url", "").replace("//target:", "//127.0.0.1:")
             expect = check.get("expect_status", [200, 302, 401, 403])
-            resp = _requests.get(url, timeout=5, allow_redirects=False)
+            resp = _requests.get(url, timeout=5, allow_redirects=False, verify=False)
             if resp.status_code in expect:
                 return True, None
             return False, f"HTTP {resp.status_code} not in {expect} for {url}"

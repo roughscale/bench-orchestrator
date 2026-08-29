@@ -22,6 +22,15 @@ class AgentAdapter(ABC):
         """
         return None
 
+    def required_target_network(self) -> str | None:
+        """Return the Docker network name that target containers must be attached to.
+
+        Returns None to signal that the target provider should create and manage a
+        per-run network. Return a specific name (e.g. "bench_target") when the adapter
+        depends on pre-existing companion infrastructure that owns that network.
+        """
+        return None
+
     @abstractmethod
     def prepare(self, manifest: Manifest, target: TargetHandle, context: RunContext, recorder: RunRecorder) -> None:
         raise NotImplementedError

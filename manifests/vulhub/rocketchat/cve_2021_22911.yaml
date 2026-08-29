@@ -22,7 +22,7 @@ network:
   exposed_ports:
   - 3000/tcp
 target:
-  startup_timeout_seconds: 120
+  startup_timeout_seconds: 300
   health:
   - type: http
     url: http://target:3000/

@@ -23,10 +23,10 @@ network:
   - 80/tcp
   - 22/tcp
 target:
-  startup_timeout_seconds: 120
+  startup_timeout_seconds: 600
   health:
   - type: http
-    url: http://target:80/
+    url: http://target:8080/
     expect_status:
     - 200
     - 302

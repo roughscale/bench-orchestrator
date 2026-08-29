@@ -26,7 +26,7 @@ target:
   health:
   - type: tcp
     host: target
-    port: 25
+    port: 8825
 goal:
   kind: functional_exploit
   success:

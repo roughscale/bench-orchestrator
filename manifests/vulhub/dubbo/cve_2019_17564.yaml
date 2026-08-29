@@ -32,6 +32,7 @@ target:
     - 302
     - 401
     - 403
+    - 500
 goal:
   kind: functional_exploit
   success:
