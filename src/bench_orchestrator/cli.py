@@ -30,8 +30,9 @@ def build_parser() -> argparse.ArgumentParser:
     run_task.add_argument("--dry-run", action="store_true")
     run_task.add_argument("--pentest-agent-dir", type=Path, default=None,
                           help="Path to the pentest-agent repo (required when adapter is pentest-agent)")
-    run_task.add_argument("--vulnbot-image", default="vulnbot:latest",
-                          help="Docker image to use when adapter is vulnbot")
+    run_task.add_argument("--agent-image", default=None,
+                          help="Docker image for the selected adapter (default: the adapter's own image, "
+                               "or the agent config's 'image' key)")
 
     # ------------------------------------------------------------------ #
     # run-benchmark: run every manifest in a directory                     #
@@ -43,7 +44,9 @@ def build_parser() -> argparse.ArgumentParser:
     run_bench.add_argument("--root-dir", type=Path, default=Path.cwd())
     run_bench.add_argument("--dry-run", action="store_true")
     run_bench.add_argument("--pentest-agent-dir", type=Path, default=None)
-    run_bench.add_argument("--vulnbot-image", default="vulnbot:latest")
+    run_bench.add_argument("--agent-image", default=None,
+                           help="Docker image for the selected adapter (default: the adapter's own image, "
+                                "or the agent config's 'image' key)")
 
     # ------------------------------------------------------------------ #
     # generate-vulhub-manifests                                            #
@@ -81,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
             adapter_name,
             pentest_agent_dir=args.pentest_agent_dir,
             agent_config=agent_config,
-            vulnbot_image=args.vulnbot_image,
+            image=args.agent_image,
         )
 
         overall_rc = 0

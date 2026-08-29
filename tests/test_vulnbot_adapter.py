@@ -15,10 +15,27 @@ from bench_orchestrator.models import Manifest, RunContext, TargetHandle
 
 
 def test_factory_builds_vulnbot_adapter_with_roughscale_image() -> None:
-    adapter = build_agent_adapter("vulnbot", vulnbot_image="ghcr.io/roughscale/vulnbot:test")
+    adapter = build_agent_adapter("vulnbot", image="ghcr.io/roughscale/vulnbot:test")
 
     assert isinstance(adapter, VulnBotAdapter)
     assert adapter.image == "ghcr.io/roughscale/vulnbot:test"
+
+
+def test_factory_reads_image_from_agent_config() -> None:
+    adapter = build_agent_adapter("vulnbot", agent_config={"image": "ghcr.io/roughscale/vulnbot:from-config"})
+
+    assert isinstance(adapter, VulnBotAdapter)
+    assert adapter.image == "ghcr.io/roughscale/vulnbot:from-config"
+
+
+def test_factory_cli_image_overrides_agent_config_image() -> None:
+    adapter = build_agent_adapter(
+        "vulnbot",
+        agent_config={"image": "ghcr.io/roughscale/vulnbot:from-config"},
+        image="ghcr.io/roughscale/vulnbot:from-cli",
+    )
+
+    assert adapter.image == "ghcr.io/roughscale/vulnbot:from-cli"
 
 
 def test_build_command_uses_agent_config() -> None:

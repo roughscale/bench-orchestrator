@@ -85,6 +85,13 @@ class TargetHandle:
     provider: str
     target_id: str
     network_name: str | None = None
+    # Docker --network value the agent container must use to reach this
+    # target, for providers where joining a named bridge (network_name)
+    # doesn't apply - e.g. a target reachable only through the host's own
+    # VPN tunnel, where the agent container needs the host's network
+    # namespace directly ("host"). None means network_name (or the default
+    # bridge) is sufficient.
+    network_mode: str | None = None
     target_alias: str | None = None
     endpoint: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
