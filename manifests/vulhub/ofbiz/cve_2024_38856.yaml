@@ -23,10 +23,10 @@ network:
   - 8443/tcp
   - 5005/tcp
 target:
-  startup_timeout_seconds: 120
+  startup_timeout_seconds: 300
   health:
   - type: http
-    url: http://target:8443/
+    url: https://target:8443/webtools/control/main
     expect_status:
     - 200
     - 302

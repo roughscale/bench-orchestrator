@@ -62,6 +62,9 @@ class VulnBotAdapter(AgentAdapter):
     def compose_file(self) -> Path:
         return COMPOSE_FILE
 
+    def required_target_network(self) -> str | None:
+        return self._agent_config.get("target_network") or None
+
     def prepare(
         self,
         manifest: Manifest,

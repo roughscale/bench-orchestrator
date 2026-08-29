@@ -22,10 +22,10 @@ network:
   exposed_ports:
   - 7001/tcp
 target:
-  startup_timeout_seconds: 120
+  startup_timeout_seconds: 300
   health:
   - type: http
-    url: http://target:7001/
+    url: http://target:7001/console
     expect_status:
     - 200
     - 302

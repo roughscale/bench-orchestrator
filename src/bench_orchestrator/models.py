@@ -42,6 +42,7 @@ class RunContext:
     root_dir: Path
     log_dir: Path
     dry_run: bool = False
+    target_network: str | None = None
 
     @classmethod
     def create(
@@ -51,6 +52,7 @@ class RunContext:
         dry_run: bool = False,
         adapter_name: str | None = None,
         model_name: str | None = None,
+        target_network: str | None = None,
     ) -> "RunContext":
         resolved_run_id = run_id or new_run_id()
         resolved_root = root_dir.resolve()
@@ -62,7 +64,13 @@ class RunContext:
             log_parts.append(_safe_dirname(model_name))
         log_parts.append(resolved_run_id)
         log_dir = resolved_root.joinpath(*log_parts)
-        return cls(run_id=resolved_run_id, root_dir=resolved_root, log_dir=log_dir, dry_run=dry_run)
+        return cls(
+            run_id=resolved_run_id,
+            root_dir=resolved_root,
+            log_dir=log_dir,
+            dry_run=dry_run,
+            target_network=target_network,
+        )
 
 
 @dataclass(frozen=True)

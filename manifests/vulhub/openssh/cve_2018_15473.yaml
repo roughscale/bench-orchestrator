@@ -20,13 +20,13 @@ benchmark:
 network:
   target_alias: target
   exposed_ports:
-  - 22/tcp
+  - 20022/tcp
 target:
   startup_timeout_seconds: 120
   health:
   - type: tcp
     host: target
-    port: 22
+    port: 20022
 goal:
   kind: functional_exploit
   success:

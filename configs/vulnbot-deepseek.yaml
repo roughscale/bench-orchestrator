@@ -8,6 +8,8 @@ base_url: https://api.deepseek.com/v1
 # API key is read from DEEPSEEK_API_KEY env var at run time.
 api_key_env: DEEPSEEK_API_KEY
 
+target_network: bench_target
+
 kali:
   image: kali-headless-base-arm64
   hostname: kali
