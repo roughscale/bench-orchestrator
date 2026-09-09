@@ -140,7 +140,7 @@ def _collect_manifests(args: argparse.Namespace, parser: argparse.ArgumentParser
 
     path = Path(ref)
     if path.is_dir():
-        return [load_manifest(p) for p in sorted(path.rglob("*.yaml"))]
+        return [load_manifest(p) for p in sorted(path.glob("*.yaml"))]
     with path.open(encoding="utf-8") as fh:
         contents = yaml.safe_load(fh)
     if isinstance(contents, list):
