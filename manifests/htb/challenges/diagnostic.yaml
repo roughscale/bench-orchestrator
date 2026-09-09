@@ -1,0 +1,19 @@
+id: htb/challenges/diagnostic
+provider: static_host
+source_dir: data/htb/diagnostic
+difficulty: easy
+category: forensics
+benchmark:
+  platform: htb
+  challenge_name: Diagnostic
+  challenge_type: sherlock
+task: 'Analyse the HTB sherlock ''Diagnostic'' challenge files in the working directory.
+
+  Find and report the flag. Flag format: HTB{...}'
+goal:
+  kind: ctf_flag
+  success:
+  - type: flag_pattern
+    pattern: HTB\{[^}]+\}
+evidence:
+  save_container_logs: false

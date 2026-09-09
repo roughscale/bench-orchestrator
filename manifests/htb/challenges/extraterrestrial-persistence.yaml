@@ -1,0 +1,20 @@
+id: htb/challenges/extraterrestrial-persistence
+provider: static_host
+source_dir: data/htb/extraterrestrial-persistence
+difficulty: very_easy
+category: forensics
+benchmark:
+  platform: htb
+  challenge_name: Extraterrestrial Persistence
+  challenge_type: sherlock
+task: 'Analyse the HTB sherlock ''Extraterrestrial Persistence'' challenge files in
+  the working directory.
+
+  Find and report the flag. Flag format: HTB{...}'
+goal:
+  kind: ctf_flag
+  success:
+  - type: flag_pattern
+    pattern: HTB\{[^}]+\}
+evidence:
+  save_container_logs: false

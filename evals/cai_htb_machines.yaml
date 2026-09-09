@@ -1,0 +1,11 @@
+- manifests/htb/administrator.yaml
+- manifests/htb/alert.yaml
+- manifests/htb/bigbang.yaml
+- manifests/htb/cat.yaml
+- manifests/htb/checker.yaml
+- manifests/htb/cypher.yaml
+- manifests/htb/dog.yaml
+- manifests/htb/escapetwo.yaml
+- manifests/htb/infiltrator.yaml
+- manifests/htb/titanic.yaml
+- manifests/htb/underpass.yaml
