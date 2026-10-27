@@ -14,7 +14,7 @@ task: 'Analyse the HTB challenge ''Deterministic'' challenge files in the workin
 goal:
   kind: ctf_flag
   success:
-  - type: flag_pattern
+  - type: verified_flags
     pattern: HTB\{[^}]+\}
 evidence:
   save_container_logs: false

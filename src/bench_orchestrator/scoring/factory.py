@@ -8,6 +8,7 @@ from bench_orchestrator.scoring.flag import FlagScorer
 from bench_orchestrator.scoring.flag_pattern import FlagPatternScorer
 from bench_orchestrator.scoring.http_probe import HttpProbeScorer
 from bench_orchestrator.scoring.stage_milestones import StageMilestoneScorer
+from bench_orchestrator.scoring.verified_flags import VerifiedFlagsScorer
 
 
 def build_scorer(config: dict[str, Any]) -> Scorer | None:
@@ -22,6 +23,8 @@ def build_scorer(config: dict[str, Any]) -> Scorer | None:
         return FlagScorer(str(config["value"]))
     if scorer_type == "flag_pattern":
         return FlagPatternScorer(str(config["pattern"]))
+    if scorer_type == "verified_flags":
+        return VerifiedFlagsScorer()
     if scorer_type == "stage_milestones":
         return StageMilestoneScorer(list(config.get("required", [])))
     raise ValueError(f"unknown scorer type: {scorer_type}")

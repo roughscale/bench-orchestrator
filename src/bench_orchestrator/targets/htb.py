@@ -91,6 +91,12 @@ class HtbTargetProvider(TargetProvider):
             recorder.event("target_started", {"provider": self.name, "mode": "auto", "dry_run": True})
             return TargetHandle(provider=self.name, target_id=manifest.id, network_mode="host", metadata=metadata)
 
+        # HTB tells us directly whether this machine has one flag or two
+        # (isSingleFlag) - most do have both a user and root flag, but not
+        # all, so this isn't something to hardcode. Scoring (HtbMachineFlagScorer)
+        # reads this back to know how many distinct flags must be captured.
+        metadata["required_flags"] = _get_required_flags(self._api_key, self._machine_id)
+
         active = _get_active_machine(self._api_key)
         if active and active.get("id") not in (None, self._machine_id):
             if not target.get("auto_terminate_other_active", False):
@@ -103,15 +109,35 @@ class HtbTargetProvider(TargetProvider):
             _terminate_machine(self._api_key, active["id"])
             active = None
 
-        if active and active.get("id") == self._machine_id and active.get("ip"):
-            recorder.event("target_reused_active", {"provider": self.name, "machine_id": self._machine_id, "ip": active["ip"]})
+        if active and active.get("id") == self._machine_id:
+            # Already active, whether or not it has an IP yet (still booting -
+            # _wait_for_ip below handles that either way). Calling vm/spawn
+            # again here for the same machine_id gets a 403 from HTB
+            # ("You already have an active instance") since it's already
+            # spawned - the id match alone is enough to skip spawning.
+            recorder.event("target_reused_active", {"provider": self.name, "machine_id": self._machine_id, "ip": active.get("ip")})
         else:
             recorder.event("target_spawning", {"provider": self.name, "machine_id": self._machine_id})
             _spawn_machine(self._api_key, self._machine_id)
             self._spawned_by_us = True
 
-        timeout = int(target.get("spawn_timeout_seconds", 300))
-        endpoint = _wait_for_ip(self._api_key, self._machine_id, timeout)
+        # Once we've spawned the machine, anything that stops start() from
+        # returning a handle - a _wait_for_ip timeout, a Ctrl+C during the
+        # poll - would otherwise leak it: the runner only calls stop() when
+        # start() returned a handle, so a failure here has to tear down its
+        # own spawn before propagating. (A reused-active machine isn't ours
+        # to terminate, so this only fires when _spawned_by_us is set.)
+        try:
+            timeout = int(target.get("spawn_timeout_seconds", 300))
+            endpoint = _wait_for_ip(self._api_key, self._machine_id, timeout)
+        except BaseException:
+            if self._spawned_by_us:
+                try:
+                    _terminate_machine(self._api_key, self._machine_id)
+                    recorder.event("target_spawn_aborted", {"provider": self.name, "machine_id": self._machine_id})
+                except Exception as exc:
+                    recorder.event("teardown_failed", {"provider": self.name, "error": str(exc)})
+            raise
         recorder.event("target_started", {"provider": self.name, "mode": "auto", "machine_id": self._machine_id, "endpoint": endpoint})
 
         return TargetHandle(provider=self.name, target_id=manifest.id, endpoint=endpoint,
@@ -220,6 +246,21 @@ def _resolve_machine_id(api_key: str, name: str) -> int:
     if len(matches) > 1:
         raise RuntimeError(f"HTB machine '{name}' matched multiple machines: {[m.get('id') for m in matches]}")
     return int(matches[0]["id"])
+
+
+def _get_required_flags(api_key: str, machine_id: int) -> int:
+    """How many distinct flags this machine needs before it's solved.
+
+    /machine/profile/{id} works with a numeric id (unlike name lookups on
+    this same endpoint - see the module note above) and returns
+    isSingleFlag regardless of whether machine_id came from the manifest
+    directly or via _resolve_machine_id, so this is the one place that
+    needs to know it.
+    """
+    resp = requests.get(f"{_API_BASE}/machine/profile/{machine_id}", headers=_api_headers(api_key), timeout=15)
+    resp.raise_for_status()
+    info = resp.json().get("info") or {}
+    return 1 if info.get("isSingleFlag") else 2
 
 
 def _get_active_machine(api_key: str) -> dict[str, Any] | None:

@@ -13,7 +13,7 @@ task: 'Analyse the HTB challenge ''SpookyPass'' challenge files in the working d
 goal:
   kind: ctf_flag
   success:
-  - type: flag_pattern
+  - type: verified_flags
     pattern: HTB\{[^}]+\}
 evidence:
   save_container_logs: false
