@@ -30,7 +30,7 @@ task: |
 goal:
   kind: ctf_flag
   success:
-  - type: flag_pattern
+  - type: verified_flags
     pattern: "[0-9a-f]{32}"
 evidence:
   save_container_logs: true

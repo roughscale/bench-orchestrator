@@ -4,10 +4,12 @@ import json
 import os
 import subprocess
 import threading
+import uuid
 from pathlib import Path
 from typing import Any
 
 from bench_orchestrator.agents.base import AgentAdapter
+from bench_orchestrator.agents.htb_flag_verify_server import FlagVerifyServer, build_verify_server
 from bench_orchestrator.evidence import RunRecorder
 from bench_orchestrator.models import AgentResult, Manifest, RunContext, TargetHandle
 
@@ -68,7 +70,20 @@ class CaiAgentAdapter(AgentAdapter):
         recorder: RunRecorder,
     ) -> AgentResult:
         target_desc = target.endpoint or manifest.raw.get("target", {}).get("host", "")
-        env = _build_env(manifest, target_desc, self.agent_config, self._api_keys)
+        # File-based challenges (StaticHostTargetProvider) have no live
+        # endpoint - target.metadata["challenge_dir"] points at the
+        # downloaded/extracted challenge files on the host instead. Mount it
+        # into the container so the agent actually has something to analyse.
+        # Mount point is parallel to the existing /opt/cai/logs and
+        # /opt/cai/artifacts mounts below; named once here since both the
+        # volume mount and the prompt text (via _build_env) must agree on it.
+        challenge_dir = target.metadata.get("challenge_dir")
+        challenge_mount = "/opt/cai/challenge" if challenge_dir else None
+        flags_required = int(target.metadata.get("required_flags", 1))
+        env = _build_env(
+            manifest, target_desc, self.agent_config, self._api_keys,
+            challenge_mount=challenge_mount, flags_required=flags_required,
+        )
 
         if context.dry_run:
             recorder.event(
@@ -76,6 +91,24 @@ class CaiAgentAdapter(AgentAdapter):
                 {"adapter": self.name, "dry_run": True, "env_keys": sorted(env)},
             )
             return AgentResult(status="completed", summary="Dry-run cai adapter execution.")
+
+        # Gives the container's submit_flag tool (cai's
+        # bench/submit_flag_tool.py) somewhere to get real HTB verification
+        # instead of falling back to a local shape/exact match - see
+        # htb_flag_verify_server.py. Not fatal if this can't be resolved
+        # (e.g. a non-HTB task, or a name lookup failure): submit_flag
+        # still works, just without real verification, same as before this
+        # existed.
+        verify_server: FlagVerifyServer | None = None
+        htb_api_key = os.environ.get("HTB_API_KEY")
+        if htb_api_key:
+            try:
+                verify_server = build_verify_server(manifest, target, htb_api_key)
+            except Exception as exc:
+                recorder.event("flag_verify_unavailable", {"adapter": self.name, "error": str(exc)})
+        if verify_server is not None:
+            verify_server.start()
+            env["CHALLENGE_FLAG_VERIFY_URL"] = f"http://host.docker.internal:{verify_server.port}/verify"
 
         log_dir = (context.log_dir / "target_logs" / "cai" / "logs").resolve()
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -91,13 +124,29 @@ class CaiAgentAdapter(AgentAdapter):
 
         recorder.event("agent_started", {"adapter": self.name, "network": network, "timeout_seconds": timeout})
 
+        volumes = {str(log_dir): "/opt/cai/logs", str(artifacts_dir): "/opt/cai/artifacts"}
+        if challenge_dir:
+            volumes[str(Path(challenge_dir).resolve())] = challenge_mount
+
+        # Named so a timeout can `docker kill` the container itself, not just
+        # the local `docker run` client - see _docker_run.
+        container_name = f"cai-bench-{uuid.uuid4().hex[:12]}"
         cmd = _build_docker_cmd(
             image=self.image,
             env=env,
             network=network,
-            volumes={str(log_dir): "/opt/cai/logs", str(artifacts_dir): "/opt/cai/artifacts"},
+            volumes=volumes,
+            container_name=container_name,
         )
-        result, error, stdout, stderr = _docker_run(cmd, timeout_s=timeout)
+        try:
+            result, error, stdout, stderr = _docker_run(cmd, timeout_s=timeout, container_name=container_name)
+        finally:
+            # Only needed while the container might still call back into
+            # it - stop it the moment _docker_run returns, on every exit
+            # path (success, error, or an exception unwinding through
+            # here), rather than leaving it listening for the rest of run().
+            if verify_server is not None:
+                verify_server.stop()
 
         recorder.command(
             _redact(cmd),
@@ -109,22 +158,34 @@ class CaiAgentAdapter(AgentAdapter):
         if stdout:
             recorder.transcript(role="agent", content=stdout, metadata={"adapter": self.name})
 
+        # cai writes its own full session transcript here (mounted from
+        # log_dir above) - much richer than the one-line summary below,
+        # which only ever contains cai's own already-decided flag guess(es).
+        # Scorers need this to have any chance of finding a flag cai itself
+        # missed or mis-extracted (confirmed live: cai's local regex can
+        # grab garbage), and to check more than one candidate for
+        # multi-flag targets. Attached on both outcomes below - a
+        # cai-reported "failed"/timed-out run can still have found
+        # something worth scoring in its transcript before it gave up.
+        log_artifacts = [str(p) for p in sorted(log_dir.glob("*.jsonl"))]
+
         if error is not None:
             recorder.event("agent_completed", {"adapter": self.name, "status": "failed", "error": error})
             status = "timed_out" if "timeout" in error else "failed"
-            return AgentResult(status=status, summary=f"cai run failed: {error}", metadata={"error": error})
+            return AgentResult(status=status, summary=f"cai run failed: {error}", metadata={"error": error}, artifacts=log_artifacts)
 
         solved = bool(result.get("solved"))
         summary = (
             f"cai {'solved' if solved else 'did not solve'} the task in "
             f"{result.get('turns')} turns ({result.get('stopped_reason')}). "
-            f"Flag: {result.get('flag')}"
+            f"Flags found: {result.get('flags')}"
         )
         recorder.event("agent_completed", {"adapter": self.name, "status": "completed" if solved else "failed", "result": result})
         return AgentResult(
             status="completed" if solved else "failed",
             summary=summary,
             metadata=result,
+            artifacts=log_artifacts,
         )
 
     def stop(self, recorder: RunRecorder) -> None:
@@ -142,9 +203,17 @@ def _build_env(
     target_desc: str,
     agent_config: dict[str, Any],
     api_keys: dict[str, str],
+    challenge_mount: str | None = None,
+    flags_required: int = 1,
 ) -> dict[str, str]:
     task = str(manifest.raw.get("task", "")).strip()
-    prompt = f"{task}\n\nTarget: {target_desc}" if task else f"Target: {target_desc}"
+    if challenge_mount:
+        # File-based challenge: no live target, just files mounted in the
+        # container - tell the agent where, instead of an empty "Target: ".
+        suffix = f"Challenge files are in {challenge_mount} (already extracted)."
+    else:
+        suffix = f"Target: {target_desc}"
+    prompt = f"{task}\n\n{suffix}" if task else suffix
 
     env = {
         "CHALLENGE_PROMPT": prompt,
@@ -157,6 +226,7 @@ def _build_env(
         # cost - both overridable per agent_config.
         "CAI_GUARDRAILS": str(agent_config.get("guardrails", False)).lower(),
         "CAI_REASONING_EFFORT": str(agent_config.get("reasoning_effort", "low")),
+        "CHALLENGE_FLAGS_REQUIRED": str(flags_required),
         **api_keys,
     }
     flag_pattern = _flag_pattern(manifest)
@@ -168,9 +238,15 @@ def _build_env(
 
 
 def _flag_pattern(manifest: Manifest) -> str | None:
+    # Not gated on scorer type - "pattern" is used for the container's
+    # CHALLENGE_FLAG_PATTERN env var regardless of which scorer actually
+    # decides pass/fail. verified_flags manifests still carry a pattern
+    # here: it's submit_flag_tool's own local-verification fallback (used
+    # when CHALLENGE_FLAG_VERIFY_URL isn't set), not something the scorer
+    # itself reads anymore.
     for entry in manifest.raw.get("goal", {}).get("success", []):
-        if entry.get("type") == "flag_pattern":
-            return str(entry.get("pattern")) if entry.get("pattern") else None
+        if entry.get("pattern"):
+            return str(entry["pattern"])
     return None
 
 
@@ -179,8 +255,24 @@ def _build_docker_cmd(
     env: dict[str, str],
     network: str | None,
     volumes: dict[str, str],
+    container_name: str,
 ) -> list[str]:
-    cmd = ["docker", "run", "--rm"]
+    cmd = ["docker", "run", "--rm", "--name", container_name]
+    # The image's nmap (and other scanners) carry file capabilities
+    # (cap_net_admin,cap_net_raw=eip on /usr/lib/nmap/nmap). Docker's default
+    # bounding set has NET_RAW but not NET_ADMIN, and the kernel refuses to
+    # exec a binary whose file caps aren't all in the bounding set - so nmap
+    # dies with "Operation not permitted" before it even starts. Grant the
+    # two net caps its scans need (not --privileged); the target is
+    # authorised and the container is disposable.
+    cmd += ["--cap-add=NET_ADMIN", "--cap-add=NET_RAW"]
+    # Lets the container reach a verification server bound on the host (see
+    # htb_flag_verify_server.py) via host.docker.internal, regardless of
+    # network mode - needed because most targets don't use --network=host,
+    # where the container's own 127.0.0.1 isn't the host's. host-gateway is
+    # a real routable address on both bridge and host networking, so this
+    # is harmless to always add even when nothing's actually listening.
+    cmd += ["--add-host=host.docker.internal:host-gateway"]
     if network:
         cmd += [f"--network={network}"]
     for key, value in env.items():
@@ -191,7 +283,29 @@ def _build_docker_cmd(
     return cmd
 
 
-def _docker_run(cmd: list[str], timeout_s: int) -> tuple[dict[str, Any], str | None, str, str]:
+def _kill_container(container_name: str) -> None:
+    """Best-effort `docker kill` on a named container.
+
+    `--rm` only removes a container that exits/stops on its own; killing the
+    local `docker run` client (proc.kill() below) does not stop the daemon
+    side of it - the container keeps running orphaned, still holding
+    whatever network listeners the agent started. Since the container is
+    named at launch, we can reach it directly regardless of how _docker_run
+    exits. A missing container (the normal-completion case, already reaped
+    by --rm) is expected and silently ignored.
+    """
+    try:
+        subprocess.run(
+            ["docker", "kill", container_name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+    except Exception:
+        pass
+
+
+def _docker_run(cmd: list[str], timeout_s: int, container_name: str) -> tuple[dict[str, Any], str | None, str, str]:
     """Run the cai-bench container; stream stderr, parse the trailing JSON stdout line.
 
     Same contract as cai's own bench/orchestrator.py::_docker_run - the
@@ -217,12 +331,24 @@ def _docker_run(cmd: list[str], timeout_s: int) -> tuple[dict[str, Any], str | N
     stderr_thread.start()
 
     try:
-        proc.wait(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        stdout_thread.join()
-        stderr_thread.join()
-        return {}, f"wall-clock timeout after {timeout_s}s", "".join(stdout_lines), "".join(stderr_lines)
+        try:
+            proc.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout_thread.join()
+            stderr_thread.join()
+            return {}, f"wall-clock timeout after {timeout_s}s", "".join(stdout_lines), "".join(stderr_lines)
+        except BaseException:
+            # KeyboardInterrupt or anything else unwinding _docker_run early -
+            # the container must not outlive it. Kill the local client too so
+            # we don't leave it attached to a container we're about to kill.
+            proc.kill()
+            raise
+    finally:
+        # Covers every exit path, including the two above: on normal
+        # completion the container is already gone (--rm) and this is a
+        # harmless no-op; on timeout or an exception it's the actual fix.
+        _kill_container(container_name)
 
     stdout_thread.join()
     stderr_thread.join()
