@@ -103,7 +103,7 @@ class CaiAgentAdapter(AgentAdapter):
         htb_api_key = os.environ.get("HTB_API_KEY")
         if htb_api_key:
             try:
-                verify_server = build_verify_server(manifest, target, htb_api_key)
+                verify_server = build_verify_server(manifest, target, htb_api_key, recorder)
             except Exception as exc:
                 recorder.event("flag_verify_unavailable", {"adapter": self.name, "error": str(exc)})
         if verify_server is not None:

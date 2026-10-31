@@ -37,6 +37,26 @@ def test_verify_challenge_flag_rejects_known_wrong_statuses(monkeypatch) -> None
         assert correct is False
 
 
+def test_verify_challenge_flag_accepts_already_owned_on_400(monkeypatch) -> None:
+    # A correct flag for a pre-owned challenge comes back as 400 "Challenge
+    # already solved" (status + body confirmed live). HTB validates the flag
+    # before returning that, so it counts as correct.
+    for message in ("Challenge already solved", "You have already owned this challenge"):
+        monkeypatch.setattr(module.requests, "post", lambda *a, **k: _FakeResponse(400, message))
+        correct, returned = module._verify_challenge_flag("key", 360, "HTB{real}")
+        assert correct is True
+        assert returned == message
+
+
+def test_verify_challenge_flag_already_owned_message_only_counts_on_400(monkeypatch) -> None:
+    # The already-owned verdict is a 400-only signal; 403/422 stay rejections
+    # even if some message happened to contain "already".
+    for status in (403, 422):
+        monkeypatch.setattr(module.requests, "post", lambda *a, **k: _FakeResponse(status, "already solved"))
+        correct, _ = module._verify_challenge_flag("key", 360, "HTB{real}")
+        assert correct is False
+
+
 def test_verify_challenge_flag_raises_on_unexpected_status(monkeypatch) -> None:
     monkeypatch.setattr(module.requests, "post", lambda *a, **k: _FakeResponse(500, "server error"))
 
@@ -62,6 +82,29 @@ def test_verify_machine_flag_rejects_400(monkeypatch) -> None:
     correct, _ = module._verify_machine_flag("key", 351, "wrong")
 
     assert correct is False
+
+
+def test_verify_machine_flag_records_raw_response(monkeypatch) -> None:
+    # The verify server runs host-side with no agent-visible output, so the
+    # raw HTB response (status + body + submitted flag) is recorded as an
+    # event - the only place a re-run can see why a correct-looking flag was
+    # rejected, since the status is otherwise discarded.
+    monkeypatch.setattr(module.requests, "post", lambda *a, **k: _FakeResponse(400, "Incorrect Flag."))
+    events = []
+
+    class _Rec:
+        def event(self, phase, payload):
+            events.append((phase, payload))
+
+    module._verify_machine_flag("key", 351, "deadbeef" * 4, _Rec())
+
+    assert len(events) == 1
+    phase, payload = events[0]
+    assert phase == "flag_verify_response"
+    assert payload["status_code"] == 400
+    assert payload["body"] == "Incorrect Flag."
+    assert payload["flag"] == "deadbeef" * 4
+    assert payload["machine_id"] == 351
 
 
 def test_build_verify_server_uses_target_metadata_challenge_id(monkeypatch) -> None:
@@ -102,7 +145,7 @@ def test_build_verify_server_resolves_challenge_id_by_name_for_static_host(monke
 
 def test_build_verify_server_falls_back_to_machine_id(monkeypatch) -> None:
     calls = []
-    monkeypatch.setattr(module, "_verify_machine_flag", lambda api_key, mid, flag: calls.append(mid) or (True, "ok"))
+    monkeypatch.setattr(module, "_verify_machine_flag", lambda api_key, mid, flag, recorder=None: calls.append(mid) or (True, "ok"))
 
     manifest = Manifest(raw={"id": "x", "provider": "htb"})
     target = TargetHandle(provider="htb", target_id="x", metadata={"machine_id": 351})
