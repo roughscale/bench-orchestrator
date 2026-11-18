@@ -217,7 +217,7 @@ def test_run_starts_and_stops_verify_server_and_passes_its_url(tmp_path, monkeyp
         return {"solved": False, "flags": []}, None, "", ""
 
     monkeypatch.setenv("HTB_API_KEY", "key")
-    monkeypatch.setattr(cai_agent, "build_verify_server", lambda manifest, target, api_key: FakeServer())
+    monkeypatch.setattr(cai_agent, "build_verify_server", lambda manifest, target, api_key, recorder=None: FakeServer())
     monkeypatch.setattr(cai_agent, "_build_docker_cmd", fake_build_docker_cmd)
     monkeypatch.setattr(cai_agent, "_docker_run", fake_docker_run)
 
