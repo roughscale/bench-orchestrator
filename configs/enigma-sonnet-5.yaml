@@ -1,0 +1,5 @@
+adapter: enigma
+model: claude-sonnet-5
+config_file: config/default_ctf.yaml
+per_instance_cost_limit: 3.0
+timeout_seconds: 3600

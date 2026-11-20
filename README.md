@@ -143,3 +143,41 @@ Run with a custom roughscale VulnBot image if needed:
 bench-orchestrator run-task manifests/example.yaml \
   --vulnbot-image vulnbot:latest
 ```
+
+## EnIGMA Adapter
+
+Use `agent.adapter: enigma` to run the EnIGMA agent harness
+(`research/enigma-ctf` — a SWE-agent v0.7 checkout with its `--ctf`
+extensions) in a Docker container. Build the image from that checkout — no
+Dockerfile lives in this repo for it, same as `cai-bench`/`vulnbot`/
+`pentest-agent`:
+
+```bash
+docker build -t enigma-bench:latest path/to/enigma-ctf
+```
+
+The adapter runs a single `docker run --rm` per task, invoking
+`research/enigma-ctf/bench/runner.py` — EnIGMA's own non-interactive bench
+entry point, which stages the challenge directory (stripping any
+`docker-compose.yml` so it doesn't double-start a target the orchestrator
+already started), runs the real `run.py` CLI once, and prints a single JSON
+result line, the same contract `cai`'s own `bench/runner.py` uses. The
+target itself is owned entirely by the normal target-provider flow (e.g.
+`nyuctf:<challenge_id>` via `--nyuctf-repo`) — EnIGMA's exec container
+reaches it over the `ctfnet` Docker network it joins on its own for any
+CTF-mode run, using the service alias already in the challenge's
+`challenge.json`.
+
+```yaml
+adapter: enigma
+model: claude-sonnet-5
+config_file: config/default_ctf.yaml
+per_instance_cost_limit: 3.0
+timeout_seconds: 3600
+```
+
+```bash
+bench-orchestrator run-task nyuctf:2018f-msc-leaked_flag \
+  --agent-config configs/enigma-sonnet-5.yaml \
+  --nyuctf-repo ../NYU_CTF_Bench
+```

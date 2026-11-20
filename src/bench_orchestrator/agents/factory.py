@@ -4,6 +4,7 @@ from pathlib import Path
 
 from bench_orchestrator.agents.base import AgentAdapter
 from bench_orchestrator.agents.cai_agent import CaiAgentAdapter
+from bench_orchestrator.agents.enigma import EnigmaAgentAdapter
 from bench_orchestrator.agents.manual import ManualAgentAdapter
 from bench_orchestrator.agents.pentest_agent import PentestAgentAdapter
 from bench_orchestrator.agents.vulnbot import VulnBotAdapter
@@ -39,5 +40,7 @@ def build_agent_adapter(
         return VulnBotAdapter(image=resolved_image or "vulnbot:latest", agent_config=agent_config)
     if name == "cai":
         return CaiAgentAdapter(image=resolved_image or "cai-bench:latest", agent_config=agent_config)
+    if name == "enigma":
+        return EnigmaAgentAdapter(image=resolved_image or "enigma-bench:latest", agent_config=agent_config)
     raise ValueError(f"unknown agent adapter: {name}")
 

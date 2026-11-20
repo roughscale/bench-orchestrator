@@ -141,7 +141,7 @@ class NyuCtfTargetProvider(TargetProvider):
         while time.monotonic() < deadline:
             all_ok = True
             for check in checks:
-                ok, err = _run_health_check(check)
+                ok, err = _run_health_check(check, network=handle.network_name)
                 if not ok:
                     all_ok = False
                     last_error = err

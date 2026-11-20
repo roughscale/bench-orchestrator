@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -169,7 +170,7 @@ class VulhubTargetProvider(TargetProvider):
         while time.monotonic() < deadline:
             all_ok = True
             for check in checks:
-                ok, err = _run_health_check(check)
+                ok, err = _run_health_check(check, network=handle.network_name)
                 if not ok:
                     all_ok = False
                     last_error = err
@@ -360,34 +361,75 @@ def _find_primary_container(container_ids: list[str], port: str | None) -> str |
     return None
 
 
-def _run_health_check(check: dict[str, Any]) -> tuple[bool, str | None]:
-    """Execute a single health check. Returns (ok, error_message)."""
-    import socket
-    import requests as _requests
+# busybox alone covers both check types below (it ships both `nc` and
+# `wget`) - deliberately not relying on whatever tools happen to be inside
+# the *target's own* container, since that varies per challenge/scenario
+# image and isn't something this code controls or can assume.
+_HEALTH_PROBE_IMAGE = "busybox:latest"
 
+
+def _run_health_check(check: dict[str, Any], *, network: str | None) -> tuple[bool, str | None]:
+    """Execute a single health check from inside a throwaway busybox
+    container attached to `network`, rather than from the orchestrator's
+    own host process. Returns (ok, error_message).
+
+    `network` should be the bench run network the target's primary
+    container was attached to (see _attach_compose_to_network) - the one
+    `--alias <target_alias>` was assigned on. A check's configured host
+    (the literal alias "target" by Vulhub's own convention, or a custom
+    name such as a challenge's own "box" value) only resolves inside that
+    Docker network - it is not reachable by that name from this process
+    directly, and the target's port is not even guaranteed to be published
+    to the real host at all. Probing from a container already on `network`
+    works uniformly whether or not the port happens to also be published.
+    """
     check_type = check.get("type", "tcp")
     try:
-        if check_type == "http":
-            # Replace the "target" alias with 127.0.0.1 — the orchestrator is on the
-            # host and reaches containers through the bound ports, not the bench network.
-            url = check.get("url", "").replace("//target:", "//127.0.0.1:")
-            expect = check.get("expect_status", [200, 302, 401, 403])
-            resp = _requests.get(url, timeout=5, allow_redirects=False, verify=False)
-            if resp.status_code in expect:
-                return True, None
-            return False, f"HTTP {resp.status_code} not in {expect} for {url}"
-
-        elif check_type == "tcp":
+        if check_type == "tcp":
             host = check.get("host", "127.0.0.1")
-            if host == "target":
-                host = "127.0.0.1"
             port = int(check.get("port", 80))
-            with socket.create_connection((host, port), timeout=5):
-                pass
-            return True, None
+            return _probe_tcp(network, host, port)
+
+        elif check_type == "http":
+            url = check.get("url", "")
+            expect = check.get("expect_status", [200, 302, 401, 403])
+            return _probe_http(network, url, expect)
 
     except Exception as exc:
         return False, str(exc)
 
     return False, f"unknown health check type: {check_type}"
+
+
+def _probe_tcp(network: str | None, host: str, port: int, timeout: int = 5) -> tuple[bool, str | None]:
+    cmd = ["docker", "run", "--rm"]
+    if network:
+        cmd += ["--network", network]
+    cmd += [_HEALTH_PROBE_IMAGE, "nc", "-z", "-w", str(timeout), host, str(port)]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 15)
+    if result.returncode == 0:
+        return True, None
+    detail = (result.stderr or result.stdout or "").strip()
+    return False, f"nc -z {host}:{port} failed (rc={result.returncode}){': ' + detail if detail else ''}"
+
+
+def _probe_http(network: str | None, url: str, expect: list[int], timeout: int = 5) -> tuple[bool, str | None]:
+    # busybox's wget prints the status line ("HTTP/1.1 <code> <reason>")
+    # regardless of outcome, but its own exit code is non-zero for any
+    # non-2xx response - confirmed live (404 and connection-refused both
+    # exit 1). The status code has to be parsed out of the text, not taken
+    # from the exit code, since expect_status treats 401/403/302 as
+    # acceptable "healthy" responses too, not just 200.
+    cmd = ["docker", "run", "--rm"]
+    if network:
+        cmd += ["--network", network]
+    cmd += [_HEALTH_PROBE_IMAGE, "wget", "-S", "--spider", "-T", str(timeout), url]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 15)
+    output = result.stdout + result.stderr
+    match = re.search(r"HTTP/\d\.\d\s+(\d{3})", output)
+    if match and int(match.group(1)) in expect:
+        return True, None
+    if match:
+        return False, f"HTTP {match.group(1)} not in {expect} for {url}"
+    return False, f"no HTTP response for {url}: {output.strip()}"
 

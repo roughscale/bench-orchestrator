@@ -9,6 +9,7 @@ from bench_orchestrator.models import HealthStatus, Manifest, RunContext, Target
 from bench_orchestrator.targets.base import TargetProvider
 from bench_orchestrator.targets.vulhub import (
     _attach_compose_to_network,
+    _probe_tcp,
     docker_project_name,
     run_command,
 )
@@ -180,7 +181,7 @@ class AutoPenBenchTargetProvider(TargetProvider):
         while time.monotonic() < deadline:
             all_ok = True
             for check in checks:
-                ok, err = _run_health_check(check)
+                ok, err = _run_health_check(check, network=handle.network_name)
                 if not ok:
                     all_ok = False
                     last_error = err
@@ -392,10 +393,16 @@ def _inspect_network(container_id: str | None, network_name: str) -> tuple[str |
     return target_ip, target_net
 
 
-def _run_health_check(check: dict[str, Any]) -> tuple[bool, str | None]:
-    """Execute one health check. Returns (ok, error_message)."""
-    import socket
+def _run_health_check(check: dict[str, Any], *, network: str | None) -> tuple[bool, str | None]:
+    """Execute one health check. Returns (ok, error_message).
 
+    tcp checks are probed from inside a throwaway busybox container
+    attached to `network` (the bench run network the target's primary
+    container was attached to - see _attach_compose_to_network), not from
+    the orchestrator's own host process - see the matching _run_health_check
+    in vulhub.py for why: the configured host is a Docker-network alias
+    that may not even be published to the real host at all.
+    """
     check_type = check.get("type", "container_running")
     try:
         if check_type == "container_running":
@@ -412,12 +419,8 @@ def _run_health_check(check: dict[str, Any]) -> tuple[bool, str | None]:
 
         elif check_type == "tcp":
             host = check.get("host", "127.0.0.1")
-            if host == "target":
-                host = "127.0.0.1"
             port = int(check.get("port", 22))
-            with socket.create_connection((host, port), timeout=5):
-                pass
-            return True, None
+            return _probe_tcp(network, host, port)
 
     except Exception as exc:
         return False, str(exc)
